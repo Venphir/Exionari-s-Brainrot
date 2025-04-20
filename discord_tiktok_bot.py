@@ -306,12 +306,14 @@ async def prefix_send_video(ctx):
     try:
         # Seleccionar un tema aleatorio
         theme = random.choice(themes)
+        print(f"[_enviar_video] Tema seleccionado: {theme}")
         
         # Obtener videos (puede tardar)
         hashtag_data = api.hashtag(name=theme.lstrip('#'))
         videos = []
-        async for video in hashtag_data.videos(count=10):
+        async for video in hashtag_data.videos(count=5):  # Reducir a 5 para mayor rapidez
             videos.append(video)
+            print(f"[_enviar_video] Video encontrado: {video.id}")
             
         if not videos:
             await ctx.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
@@ -320,11 +322,12 @@ async def prefix_send_video(ctx):
         # Seleccionar un video aleatorio
         video = random.choice(videos)
         video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
+        print(f"[_enviar_video] Video seleccionado: {video_url}")
         
         # Actualizar el mensaje
         await loading_msg.edit(content=f"⬇️ Descargando video de **{theme}**... Por favor espera.")
         
-        # Descargar el video
+        # Descargar el video con compresión si es necesario
         video_file = await download_tiktok_video(video_url)
         
         if video_file:
@@ -341,7 +344,7 @@ async def prefix_send_video(ctx):
             # Eliminar el archivo temporal
             os.remove(video_file)
         else:
-            await ctx.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {video_url}")
+            await ctx.send(f"⚠️ No se pudo descargar el video (probablemente demasiado grande). Aquí está el enlace: {video_url}")
             
     except Exception as e:
         error_msg = str(e)
