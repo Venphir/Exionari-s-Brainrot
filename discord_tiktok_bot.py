@@ -175,7 +175,8 @@ async def send_random_video():
     print(f"Seleccionado tema: {theme}")
 
     try:
-        videos = api.by_hashtag(theme.lstrip('#'), count=10)
+        # Reemplaza 'by_hashtag' con el método correcto según la documentación actual de TikTokApi
+        videos = api.some_new_method(theme.lstrip('#'), count=10)  # Cambia 'some_new_method' al método correcto
         if not videos:
             print(f"No se encontraron videos para el tema: {theme}")
             return
