@@ -7,10 +7,18 @@ import os
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde el archivo .env
-load_dotenv()
+dotenv_path = ".env"  # Cambia esto si el archivo .env está en otra ubicación
+if not os.path.exists(dotenv_path):
+    raise FileNotFoundError(f"No se encontró el archivo .env en la ruta: {dotenv_path}")
+
+load_dotenv(dotenv_path=dotenv_path)
+
+# Configurar los intents necesarios
+intents = discord.Intents.default()
+intents.message_content = True  # Necesario para leer el contenido de los mensajes
 
 # Configuración del bot de Discord
-bot = commands.Bot(command_prefix='_')
+bot = commands.Bot(command_prefix='_', intents=intents)
 
 # Configuración de la API de TikTok
 api = TikTokApi()
@@ -58,4 +66,13 @@ async def on_ready():
     send_random_video.start()  # Iniciar la tarea periódica
 
 # Cargar el token desde el archivo .env
-bot.run(os.getenv('BOT_TOKEN'))
+token = os.getenv('BOT_TOKEN')
+
+if not token:
+    raise ValueError("El token del bot no se ha encontrado. Asegúrate de que el archivo .env contiene 'BOT_TOKEN'.")
+
+# Validar el formato del token
+if len(token) < 50:  # Los tokens suelen ser largos; ajusta este valor si es necesario
+    raise ValueError("El token parece inválido. Verifica que sea correcto.")
+
+bot.run(token)
