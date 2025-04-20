@@ -4,17 +4,40 @@ import json
 import time
 import random
 import pickle
-import instagrapi
-import instagrapi.exceptions
 import asyncio
 import traceback
+import sys
 
 # Third-party imports
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import requests as http_requests
-from instagrapi import Client
+
+# Verificación de dependencias requeridas
+try:
+    # Intentar importar PIL para verificar si está instalado
+    from PIL import Image
+except ImportError:
+    print("=== ERROR: Pillow no está instalado ===")
+    print("Instagrapi requiere Pillow (PIL) para funcionar.")
+    print("Ejecuta este comando para instalar la dependencia:")
+    print("pip install Pillow>=8.1.1")
+    print("=========================================")
+    sys.exit(1)
+    
+# Ahora que sabemos que PIL está instalado, importar instagrapi
+try:
+    import instagrapi
+    import instagrapi.exceptions
+    from instagrapi import Client
+except ImportError as e:
+    print(f"=== ERROR: No se pudo importar instagrapi ===")
+    print(f"Error: {str(e)}")
+    print("Ejecuta este comando para instalar la dependencia:")
+    print("pip install instagrapi")
+    print("==========================================")
+    sys.exit(1)
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
