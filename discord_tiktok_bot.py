@@ -9,6 +9,8 @@ import asyncio
 import time  # Faltaba importar el módulo time
 import tempfile
 import yt_dlp  # Nueva biblioteca para descargar videos
+import subprocess  # Para llamar a ffmpeg para compresión
+import math  # Para cálculos de calidad de compresión
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
@@ -432,36 +434,96 @@ async def clean_timestamps():
         if now - message_timestamps[msg_id] > 600:  # 10 minutos
             del message_timestamps[msg_id]
 
-# Función auxiliar para descargar un video de TikTok
-async def download_tiktok_video(url):
-    # Crear un nombre de archivo temporal único
+# Función mejorada para descargar y comprimir videos de TikTok
+async def download_tiktok_video(url, max_size_mb=8):
+    # Crear nombres de archivo temporales únicos
     temp_dir = tempfile.gettempdir()
-    temp_file = os.path.join(temp_dir, f"tiktok_video_{int(time.time())}.mp4")
+    temp_id = int(time.time())
+    original_file = os.path.join(temp_dir, f"tiktok_original_{temp_id}.mp4")
+    compressed_file = os.path.join(temp_dir, f"tiktok_compressed_{temp_id}.mp4")
     
     # Opciones para yt-dlp
     ydl_opts = {
         'format': 'mp4',
-        'outtmpl': temp_file,
+        'outtmpl': original_file,
         'quiet': True,
     }
     
-    # Descargar el video
     try:
+        print(f"Intentando descargar video: {url}")
+        # Intentar descargar el video
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        # Verificar si el archivo es demasiado grande (límite de Discord: 8MB)
-        if os.path.getsize(temp_file) > 8 * 1024 * 1024:
-            print(f"Video demasiado grande para enviar: {os.path.getsize(temp_file) / (1024 * 1024):.2f} MB")
-            os.remove(temp_file)
+        if not os.path.exists(original_file):
+            print(f"Error: El archivo no se descargó correctamente: {original_file}")
             return None
             
-        return temp_file
+        original_size_mb = os.path.getsize(original_file) / (1024 * 1024)
+        print(f"Video descargado. Tamaño: {original_size_mb:.2f} MB")
+        
+        # Si el archivo es menor al límite, usarlo directamente
+        if original_size_mb <= max_size_mb:
+            print(f"El video está dentro del límite de tamaño, enviándolo sin comprimir")
+            return original_file
+            
+        # Si es más grande, comprimir con ffmpeg
+        print(f"Comprimiendo video (tamaño original: {original_size_mb:.2f} MB)...")
+        
+        # Calcula el factor de calidad basado en tamaño original para lograr máximo 8MB
+        # Fórmula: crf = 23 + log(original_size/target_size)
+        crf = min(51, max(18, 23 + int(math.log(original_size_mb / max_size_mb) * 5)))
+        
+        # Comprimir con ffmpeg
+        try:
+            ffmpeg_cmd = [
+                'ffmpeg', '-i', original_file, 
+                '-c:v', 'libx264', '-crf', str(crf),
+                '-preset', 'veryfast',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-y', compressed_file
+            ]
+            print(f"Ejecutando comando: {' '.join(ffmpeg_cmd)}")
+            process = subprocess.run(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE
+            )
+            
+            if process.returncode != 0:
+                print(f"Error en ffmpeg: {process.stderr.decode()}")
+                # Si falla la compresión, intentar enviar el original
+                return original_file
+                
+            compressed_size_mb = os.path.getsize(compressed_file) / (1024 * 1024)
+            print(f"Video comprimido. Nuevo tamaño: {compressed_size_mb:.2f} MB")
+            
+            # Si sigue siendo demasiado grande después de comprimir
+            if compressed_size_mb > max_size_mb:
+                print(f"Video sigue siendo demasiado grande ({compressed_size_mb:.2f} MB)")
+                os.remove(compressed_file)
+                os.remove(original_file)
+                return None
+                
+            # Limpieza y retorno del archivo comprimido
+            os.remove(original_file)
+            return compressed_file
+            
+        except Exception as e:
+            print(f"Error en la compresión: {e}")
+            # Si falla la compresión, intentar enviar el original si es posible
+            if original_size_mb <= max_size_mb * 1.2:  # 20% de tolerancia
+                return original_file
+            else:
+                os.remove(original_file)
+                return None
+    
     except Exception as e:
-        print(f"Error al descargar el video: {e}")
+        print(f"Error al descargar/comprimir el video: {e}")
         # Limpiar archivos temporales si falló la descarga
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+        for f in [original_file, compressed_file]:
+            if os.path.exists(f):
+                os.remove(f)
         return None
 
 # Tarea periódica para enviar videos aleatorios
@@ -503,7 +565,6 @@ async def send_random_video():
         permissions = channel.permissions_for(channel.guild.me)
         if not permissions.send_messages:
             print("Error: El bot no tiene permisos para enviar mensajes en este canal.")
-            return
         if not permissions.embed_links:
             print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
             
@@ -549,15 +610,29 @@ async def enviar_video(interaction: discord.Interaction):
     try:
         # Seleccionar un tema aleatorio
         theme = random.choice(themes)
+        print(f"[/enviar_video] Tema seleccionado: {theme}")
         
         # Informar al usuario
-        await interaction.followup.send(f"🔍 Buscando videos de **{theme}**... Por favor espera.")
+        searching_msg = await interaction.followup.send(f"🔍 Buscando videos de **{theme}**... Por favor espera.")
         
         # Obtener videos (puede tardar)
+        print(f"[/enviar_video] Buscando hashtag: {theme.lstrip('#')}")
         hashtag_data = api.hashtag(name=theme.lstrip('#'))
+        
+        if not hashtag_data:
+            await interaction.followup.send(f"⚠️ Error: No se pudo encontrar el hashtag **{theme}**")
+            return
+        
+        print(f"[/enviar_video] Obteniendo videos para {theme}")
         videos = []
-        async for video in hashtag_data.videos(count=10):
-            videos.append(video)
+        try:
+            async for video in hashtag_data.videos(count=5):  # Reducido a 5 para mayor rapidez
+                videos.append(video)
+                print(f"[/enviar_video] Video encontrado: {video.id}")
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Error al obtener videos: **{str(e)}**")
+            print(f"Error al obtener videos: {e}")
+            return
             
         if not videos:
             await interaction.followup.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
@@ -566,35 +641,119 @@ async def enviar_video(interaction: discord.Interaction):
         # Seleccionar un video aleatorio
         video = random.choice(videos)
         video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
+        print(f"[/enviar_video] Video seleccionado: {video_url}")
         
         # Informar que se está descargando
-        download_msg = await interaction.followup.send(f"⬇️ Descargando video de **{theme}**... Por favor espera.")
+        try:
+            await searching_msg.edit(content=f"⬇️ Descargando video de **{theme}**... Por favor espera.")
+        except:
+            pass  # Ignorar errores de edición
+        
+        # Descargar el video
+        video_file = await download_tiktok_video(video_url)
+        
+        if video_file:
+            print(f"[/enviar_video] Enviando video desde archivo: {video_file}")
+            # Enviar el video como archivo
+            await interaction.followup.send(
+                content=f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {video_url}",
+                file=discord.File(video_file)
+            )
+            
+            # Eliminar el archivo temporal
+            os.remove(video_file)
+            
+            # Eliminar el mensaje de búsqueda
+            try:
+                await searching_msg.delete()
+            except:
+                pass
+        else:
+            # Si no se pudo descargar, enviar solo el enlace
+            await interaction.followup.send(f"⚠️ No se pudo descargar el video (probablemente demasiado grande). Aquí está el enlace: {video_url}")
+            
+    except Exception as e:
+        # Manejar cualquier error de manera segura
+        error_msg = str(e)
+        print(f"Error crítico en /enviar_video: {error_msg}")
+        
+        try:
+            await interaction.followup.send(f"❌ Error al obtener el video: {error_msg}")
+        except:
+            # Si ya ha pasado demasiado tiempo, es posible que la interacción ya no sea válida
+            channel = interaction.channel
+            if channel:
+                try:
+                    await channel.send(f"❌ Error al procesar el comando de {interaction.user.mention}: {error_msg}")
+                except:
+                    pass
+
+# También actualiza la versión del comando con prefijo
+@bot.command(name='enviar_video')
+async def prefix_send_video(ctx):
+    global themes
+    
+    # Evitar procesamiento duplicado
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    if not themes:
+        await ctx.send("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.")
+        return
+
+    if not api:
+        await ctx.send("Error: TikTokApi no está configurada correctamente.")
+        return
+
+    # Informar al usuario
+    loading_msg = await ctx.send("🔍 Buscando un video aleatorio... Por favor espera.")
+    
+    try:
+        # Seleccionar un tema aleatorio
+        theme = random.choice(themes)
+        
+        # Obtener videos (puede tardar)
+        hashtag_data = api.hashtag(name=theme.lstrip('#'))
+        videos = []
+        async for video in hashtag_data.videos(count=10):
+            videos.append(video)
+            
+        if not videos:
+            await ctx.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
+            return
+
+        # Seleccionar un video aleatorio
+        video = random.choice(videos)
+        video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
+        
+        # Actualizar el mensaje
+        await loading_msg.edit(content=f"⬇️ Descargando video de **{theme}**... Por favor espera.")
         
         # Descargar el video
         video_file = await download_tiktok_video(video_url)
         
         if video_file:
             # Enviar el video como archivo
-            await interaction.followup.send(
+            await ctx.send(
                 content=f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {video_url}",
                 file=discord.File(video_file)
             )
-            # Eliminar el mensaje de "descargando"
+            # Eliminar el mensaje de carga
             try:
-                await download_msg.delete()
+                await loading_msg.delete()
             except:
                 pass
             # Eliminar el archivo temporal
             os.remove(video_file)
         else:
-            # Si no se pudo descargar, enviar solo el enlace
-            await interaction.followup.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {video_url}")
+            await ctx.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {video_url}")
             
     except Exception as e:
-        # Manejar cualquier error de manera segura
         error_msg = str(e)
-        await interaction.followup.send(f"❌ Error al obtener el video: {error_msg}")
-        print(f"Error en /enviar_video: {error_msg}")
+        await ctx.send(f"❌ Error al obtener el video: {error_msg}")
+        print(f"Error en _enviar_video: {error_msg}")
 
 # Evento cuando el bot está listo
 @bot.event
