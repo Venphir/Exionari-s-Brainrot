@@ -98,8 +98,62 @@ if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
 # Directorio para almacenar la sesión de Instagram
 SESSION_FILE = os.path.join(CACHE_DIR, "instagram_session.json")
 
-# Inicializar el cliente de Instagram
+# Inicializar el cliente de Instagram - MOVER LA CONEXIÓN PARA NO BLOQUEAR EL INICIO DEL BOT
 ig_client = Client()
+instagram_connected = False
+
+# Cargar token de Discord desde variables de entorno
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("El token del bot de Discord no se encontró en el archivo .env. Asegúrate de incluir 'BOT_TOKEN'.")
+
+# Evento cuando el bot está listo
+@bot.event
+async def on_ready():
+    print(f'Bot conectado como {bot.user}')
+    try:
+        # Sincronizar los comandos de aplicación
+        await bot.tree.sync()
+        print("Comandos de aplicación sincronizados.")
+        
+        # Validar que el bot tiene acceso al canal
+        global channel_id
+        if channel_id:
+            channel = bot.get_channel(channel_id)
+            if channel is None:
+                print("Error: No se pudo encontrar el canal. Verifica el ID del canal.")
+            else:
+                print(f"El bot tiene acceso al canal: {channel.name}")
+                permissions = channel.permissions_for(channel.guild.me)
+                if not permissions.send_messages:
+                    print("Error: El bot no tiene permisos para enviar mensajes en este canal.")
+                if not permissions.embed_links:
+                    print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
+        
+        # Iniciar tareas programadas
+        # send_random_video.start()
+        clean_timestamps.start()
+        
+        # Conectar a Instagram en segundo plano
+        bot.loop.create_task(connect_to_instagram())
+        
+    except Exception as e:
+        print(f"Error al inicializar el bot: {e}")
+        traceback.print_exc()
+
+# Conectar a Instagram de manera asíncrona para no bloquear el bot
+async def connect_to_instagram():
+    global ig_client, instagram_connected
+    try:
+        # Realizar la conexión en una tarea separada para no bloquear el bot
+        print("Conectando a Instagram en segundo plano...")
+        await bot.loop.run_in_executor(None, login_with_session)
+        instagram_connected = True
+        print("✅ Conexión a Instagram completada en segundo plano.")
+    except Exception as e:
+        print(f"❌ Error al conectar con Instagram: {e}")
+        traceback.print_exc()
+        instagram_connected = False
 
 # Función para cargar o iniciar una nueva sesión
 def login_with_session():
@@ -230,7 +284,7 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True):
             medias = ig_client.hashtag_medias_recent(hashtag_clean, amount=count * 2)
             temp_videos = []
             for media in medias:
-                if media.media_type == 2:  # 2 indica un video (Reel)
+                if (media.media_type == 2):  # 2 indica un video (Reel)
                     video_url = f"https://www.instagram.com/reel/{media.code}/"
                     temp_videos.append({
                         'id': media.pk,
@@ -433,3 +487,20 @@ async def prefix_send_video(ctx):
     if not themes:
         await ctx.send("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.")
         return
+
+# Tarea para limpiar mensajes temporales
+@tasks.loop(minutes=5)
+async def clean_timestamps():
+    now = time.time()
+    for msg_id in list(message_timestamps.keys()):
+        if now - message_timestamps[msg_id] > 600:  # 10 minutos
+            del message_timestamps[msg_id]
+
+# IMPORTANTE: Iniciar el bot al final del archivo
+if __name__ == "__main__":
+    try:
+        print("Iniciando bot de Discord...")
+        bot.run(BOT_TOKEN)
+    except Exception as e:
+        print(f"Error fatal al iniciar el bot: {e}")
+        traceback.print_exc()
