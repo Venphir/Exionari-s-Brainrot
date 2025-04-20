@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 import json
 import asyncio
 import time  # Faltaba importar el módulo time
+import tempfile
+import yt_dlp  # Nueva biblioteca para descargar videos
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
@@ -236,6 +238,38 @@ async def clean_timestamps():
         if now - message_timestamps[msg_id] > 600:  # 10 minutos
             del message_timestamps[msg_id]
 
+# Función auxiliar para descargar un video de TikTok
+async def download_tiktok_video(url):
+    # Crear un nombre de archivo temporal único
+    temp_dir = tempfile.gettempdir()
+    temp_file = os.path.join(temp_dir, f"tiktok_video_{int(time.time())}.mp4")
+    
+    # Opciones para yt-dlp
+    ydl_opts = {
+        'format': 'mp4',
+        'outtmpl': temp_file,
+        'quiet': True,
+    }
+    
+    # Descargar el video
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        # Verificar si el archivo es demasiado grande (límite de Discord: 8MB)
+        if os.path.getsize(temp_file) > 8 * 1024 * 1024:
+            print(f"Video demasiado grande para enviar: {os.path.getsize(temp_file) / (1024 * 1024):.2f} MB")
+            os.remove(temp_file)
+            return None
+            
+        return temp_file
+    except Exception as e:
+        print(f"Error al descargar el video: {e}")
+        # Limpiar archivos temporales si falló la descarga
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        return None
+
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=1)
 async def send_random_video():
@@ -278,8 +312,21 @@ async def send_random_video():
             return
         if not permissions.embed_links:
             print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
-
-        await channel.send(f"Aquí tienes un video de {theme}: {video_url}")
+            
+        # Descargar el video para adjuntarlo
+        video_file = await download_tiktok_video(video_url)
+        
+        if video_file:
+            # Enviar el mensaje con el video adjunto
+            await channel.send(
+                content=f"Aquí tienes un video de {theme}: {video_url}",
+                file=discord.File(video_file)
+            )
+            # Eliminar el archivo temporal después de enviarlo
+            os.remove(video_file)
+        else:
+            # Si no se pudo descargar, solo enviar el enlace
+            await channel.send(f"Aquí tienes un video de {theme}: {video_url}")
 
     except discord.Forbidden:
         print("Error: El bot no tiene los permisos necesarios para realizar esta acción.")
@@ -322,7 +369,24 @@ async def enviar_video(interaction: discord.Interaction):
         if not permissions.embed_links:
             await interaction.response.send_message("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.", ephemeral=True)
 
-        await interaction.response.send_message(f"Aquí tienes un video de {theme}: {video_url}")
+        # Primero responder a la interacción para cumplir con los tiempos de respuesta de Discord
+        await interaction.response.send_message(f"Buscando video de {theme}... Por favor espera.")
+        
+        # Descargar el video para adjuntarlo
+        video_file = await download_tiktok_video(video_url)
+        
+        if video_file:
+            # Enviar un mensaje de seguimiento con el video adjunto
+            await interaction.followup.send(
+                content=f"Aquí tienes un video de {theme}: {video_url}",
+                file=discord.File(video_file)
+            )
+            # Eliminar el archivo temporal después de enviarlo
+            os.remove(video_file)
+        else:
+            # Si no se pudo descargar, solo enviar el enlace
+            await interaction.followup.send(f"Aquí tienes un video de {theme}: {video_url}")
+
     except discord.Forbidden:
         await interaction.response.send_message("Error: El bot no tiene permisos para enviar mensajes en este canal.", ephemeral=True)
     except KeyError as e:
