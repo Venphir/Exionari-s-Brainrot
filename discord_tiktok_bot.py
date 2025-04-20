@@ -339,6 +339,8 @@ async def send_random_video():
 @bot.tree.command(name="enviar_video", description="Envía un video aleatorio de TikTok basado en los temas asignados")
 async def enviar_video(interaction: discord.Interaction):
     global themes
+    
+    # Verificaciones iniciales con respuestas inmediatas
     if not themes:
         await interaction.response.send_message("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.", ephemeral=True)
         return
@@ -347,52 +349,58 @@ async def enviar_video(interaction: discord.Interaction):
         await interaction.response.send_message("Error: TikTokApi no está configurada correctamente.", ephemeral=True)
         return
 
-    theme = random.choice(themes)
+    # IMPORTANTE: Responder inmediatamente para evitar el error "La aplicación no respondió"
+    await interaction.response.defer(thinking=True)
+    
     try:
-        # Corregir el método by_hashtag que no existe, usando la misma lógica de send_random_video
+        # Seleccionar un tema aleatorio
+        theme = random.choice(themes)
+        
+        # Informar al usuario
+        await interaction.followup.send(f"🔍 Buscando videos de **{theme}**... Por favor espera.")
+        
+        # Obtener videos (puede tardar)
         hashtag_data = api.hashtag(name=theme.lstrip('#'))
         videos = []
         async for video in hashtag_data.videos(count=10):
             videos.append(video)
             
         if not videos:
-            await interaction.response.send_message(f"No se encontraron videos para el tema: {theme}", ephemeral=True)
+            await interaction.followup.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
             return
 
+        # Seleccionar un video aleatorio
         video = random.choice(videos)
         video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
-
-        permissions = interaction.channel.permissions_for(interaction.guild.me)
-        if not permissions.send_messages:
-            await interaction.response.send_message("Error: El bot no tiene permisos para enviar mensajes en este canal.", ephemeral=True)
-            return
-        if not permissions.embed_links:
-            await interaction.response.send_message("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.", ephemeral=True)
-
-        # Primero responder a la interacción para cumplir con los tiempos de respuesta de Discord
-        await interaction.response.send_message(f"Buscando video de {theme}... Por favor espera.")
         
-        # Descargar el video para adjuntarlo
+        # Informar que se está descargando
+        download_msg = await interaction.followup.send(f"⬇️ Descargando video de **{theme}**... Por favor espera.")
+        
+        # Descargar el video
         video_file = await download_tiktok_video(video_url)
         
         if video_file:
-            # Enviar un mensaje de seguimiento con el video adjunto
+            # Enviar el video como archivo
             await interaction.followup.send(
-                content=f"Aquí tienes un video de {theme}: {video_url}",
+                content=f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {video_url}",
                 file=discord.File(video_file)
             )
-            # Eliminar el archivo temporal después de enviarlo
+            # Eliminar el mensaje de "descargando"
+            try:
+                await download_msg.delete()
+            except:
+                pass
+            # Eliminar el archivo temporal
             os.remove(video_file)
         else:
-            # Si no se pudo descargar, solo enviar el enlace
-            await interaction.followup.send(f"Aquí tienes un video de {theme}: {video_url}")
-
-    except discord.Forbidden:
-        await interaction.response.send_message("Error: El bot no tiene permisos para enviar mensajes en este canal.", ephemeral=True)
-    except KeyError as e:
-        await interaction.response.send_message(f"Error al procesar datos del video: {str(e)}", ephemeral=True)
+            # Si no se pudo descargar, enviar solo el enlace
+            await interaction.followup.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {video_url}")
+            
     except Exception as e:
-        await interaction.response.send_message(f"Error al obtener el video: {str(e)}", ephemeral=True)
+        # Manejar cualquier error de manera segura
+        error_msg = str(e)
+        await interaction.followup.send(f"❌ Error al obtener el video: {error_msg}")
+        print(f"Error en /enviar_video: {error_msg}")
 
 # Evento cuando el bot está listo
 @bot.event
