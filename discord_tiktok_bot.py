@@ -426,7 +426,7 @@ async def prefix_send_video(ctx):
 
 # Actualizar el comando de ayuda con prefijo para mostrar ambas opciones
 @bot.command(name='ayuda')
-async def help_command(ctx):
+async def prefix_help_command(ctx):
     # Evitar procesamiento duplicado
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
