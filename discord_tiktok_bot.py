@@ -177,7 +177,10 @@ async def send_random_video():
     try:
         # Usar el método 'hashtag' para obtener videos relacionados con el hashtag
         hashtag_data = api.hashtag(name=theme.lstrip('#'))
-        videos = hashtag_data.videos(count=10)  # Obtener hasta 10 videos
+        videos = []
+        async for video in hashtag_data.videos(count=10):  # Consumir el generador asíncrono
+            videos.append(video)
+
         if not videos:
             print(f"No se encontraron videos para el tema: {theme}")
             return
