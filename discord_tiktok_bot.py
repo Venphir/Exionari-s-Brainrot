@@ -308,20 +308,16 @@ async def prefix_send_video(ctx):
         theme = random.choice(themes)
         print(f"[_enviar_video] Tema seleccionado: {theme}")
         
-        # Obtener videos (puede tardar)
-        hashtag_data = api.hashtag(name=theme.lstrip('#'))
-        videos = []
-        async for video in hashtag_data.videos(count=5):  # Reducir a 5 para mayor rapidez
-            videos.append(video)
-            print(f"[_enviar_video] Video encontrado: {video.id}")
-            
+        # USAR EL NUEVO MÉTODO DE BÚSQUEDA
+        videos = await get_tiktok_videos_by_hashtag(theme, count=5)
+        
         if not videos:
             await ctx.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
             return
-
-        # Seleccionar un video aleatorio
-        video = random.choice(videos)
-        video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
+            
+        # Seleccionar un video aleatorio 
+        video_info = random.choice(videos)
+        video_url = video_info['url']
         print(f"[_enviar_video] Video seleccionado: {video_url}")
         
         # Actualizar el mensaje
@@ -437,8 +433,52 @@ async def clean_timestamps():
         if now - message_timestamps[msg_id] > 600:  # 10 minutos
             del message_timestamps[msg_id]
 
+# Función mejorada para obtener videos de TikTok por hashtag
+async def get_tiktok_videos_by_hashtag(hashtag, count=5):
+    """Obtiene videos de TikTok para un hashtag usando yt-dlp directamente."""
+    print(f"Buscando videos para hashtag: {hashtag}")
+    
+    search_url = f"https://www.tiktok.com/tag/{hashtag.lstrip('#')}"
+    videos_info = []
+    
+    try:
+        # Configuración para yt-dlp para extraer información de la lista de videos
+        ydl_opts = {
+            'quiet': True,
+            'extract_flat': True,
+            'force_generic_extractor': False,
+            'logger': None,
+            'simulate': True,  # Solo extraer información, no descargar
+            'playlist_items': f"1-{count}",  # Limitar a 'count' videos
+        }
+        
+        # Extraer información de videos en la página de hashtag
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(search_url, download=False)
+            
+            if 'entries' in info:
+                for entry in info['entries']:
+                    if len(videos_info) >= count:
+                        break
+                        
+                    if entry.get('url'):
+                        video_info = {
+                            'id': entry.get('id', ''),
+                            'url': entry.get('url', ''),
+                            'title': entry.get('title', 'Video de TikTok'),
+                            'uploader': entry.get('uploader', 'Usuario de TikTok')
+                        }
+                        videos_info.append(video_info)
+                        print(f"Video encontrado: {video_info['url']}")
+            
+        return videos_info
+    except Exception as e:
+        print(f"Error al obtener videos por hashtag: {e}")
+        return []
+
 # Función mejorada para descargar y comprimir videos de TikTok
 async def download_tiktok_video(url, max_size_mb=8):
+    """Descarga y comprime videos de TikTok."""
     # Crear nombres de archivo temporales únicos
     temp_dir = tempfile.gettempdir()
     temp_id = int(time.time())
@@ -454,6 +494,15 @@ async def download_tiktok_video(url, max_size_mb=8):
     
     try:
         print(f"Intentando descargar video: {url}")
+        # Agregar timeout más largo para permitir descargas en conexiones lentas
+        ydl_opts = {
+            'format': 'mp4',
+            'outtmpl': original_file,
+            'quiet': True,
+            'socket_timeout': 30,  # Aumentar el timeout
+            'retries': 5,         # Intentar más veces
+        }
+        
         # Intentar descargar el video
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -603,10 +652,6 @@ async def enviar_video(interaction: discord.Interaction):
         await interaction.response.send_message("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.", ephemeral=True)
         return
 
-    if not api:
-        await interaction.response.send_message("Error: TikTokApi no está configurada correctamente.", ephemeral=True)
-        return
-
     # IMPORTANTE: Responder inmediatamente para evitar el error "La aplicación no respondió"
     await interaction.response.defer(thinking=True)
     
@@ -618,32 +663,16 @@ async def enviar_video(interaction: discord.Interaction):
         # Informar al usuario
         searching_msg = await interaction.followup.send(f"🔍 Buscando videos de **{theme}**... Por favor espera.")
         
-        # Obtener videos (puede tardar)
-        print(f"[/enviar_video] Buscando hashtag: {theme.lstrip('#')}")
-        hashtag_data = api.hashtag(name=theme.lstrip('#'))
-        
-        if not hashtag_data:
-            await interaction.followup.send(f"⚠️ Error: No se pudo encontrar el hashtag **{theme}**")
-            return
-        
-        print(f"[/enviar_video] Obteniendo videos para {theme}")
-        videos = []
-        try:
-            async for video in hashtag_data.videos(count=5):  # Reducido a 5 para mayor rapidez
-                videos.append(video)
-                print(f"[/enviar_video] Video encontrado: {video.id}")
-        except Exception as e:
-            await interaction.followup.send(f"⚠️ Error al obtener videos: **{str(e)}**")
-            print(f"Error al obtener videos: {e}")
-            return
+        # MÉTODO ALTERNATIVO: Usar yt-dlp directamente para obtener videos
+        videos = await get_tiktok_videos_by_hashtag(theme, count=5)
             
         if not videos:
             await interaction.followup.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
             return
 
         # Seleccionar un video aleatorio
-        video = random.choice(videos)
-        video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
+        video_info = random.choice(videos)
+        video_url = video_info['url']
         print(f"[/enviar_video] Video seleccionado: {video_url}")
         
         # Informar que se está descargando
@@ -652,33 +681,39 @@ async def enviar_video(interaction: discord.Interaction):
         except:
             pass  # Ignorar errores de edición
         
-        # Descargar el video
+        # Descargar el video con timeout ampliado
         video_file = await download_tiktok_video(video_url)
         
         if video_file:
             print(f"[/enviar_video] Enviando video desde archivo: {video_file}")
-            # Enviar el video como archivo
-            await interaction.followup.send(
-                content=f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {video_url}",
-                file=discord.File(video_file)
-            )
-            
-            # Eliminar el archivo temporal
-            os.remove(video_file)
-            
-            # Eliminar el mensaje de búsqueda
             try:
-                await searching_msg.delete()
-            except:
-                pass
+                # Enviar el video como archivo
+                await interaction.followup.send(
+                    content=f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {video_url}",
+                    file=discord.File(video_file)
+                )
+                
+                # Eliminar el archivo temporal
+                os.remove(video_file)
+                
+                # Eliminar el mensaje de búsqueda
+                try:
+                    await searching_msg.delete()
+                except:
+                    pass
+            except discord.HTTPException as http_err:
+                print(f"Error HTTP al enviar video: {http_err}")
+                await interaction.followup.send(f"⚠️ Error al enviar el video. Aquí está el enlace: {video_url}")
         else:
             # Si no se pudo descargar, enviar solo el enlace
-            await interaction.followup.send(f"⚠️ No se pudo descargar el video (probablemente demasiado grande). Aquí está el enlace: {video_url}")
+            await interaction.followup.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {video_url}")
             
     except Exception as e:
         # Manejar cualquier error de manera segura
         error_msg = str(e)
         print(f"Error crítico en /enviar_video: {error_msg}")
+        import traceback
+        traceback.print_exc()  # Imprimir traza completa para diagnóstico
         
         try:
             await interaction.followup.send(f"❌ Error al obtener el video: {error_msg}")
