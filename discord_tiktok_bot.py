@@ -23,8 +23,11 @@ bot = commands.Bot(command_prefix='_', intents=intents)
 
 # Configuración de la API de TikTok
 try:
-    # Inicializar TikTokApi con configuración adicional si es necesario
-    api = TikTokApi(custom_verify_fp="verify_kh1234567890abcdef")  # Reemplaza con tu verify_fp si es necesario
+    # Ruta al archivo de cookies
+    cookies_file = "cookies.txt"  # Asegúrate de que este archivo exista y sea válido
+
+    # Inicializar TikTokApi con el archivo de cookies
+    api = TikTokApi(cookies=cookies_file)
     api.create_session()  # Crear una sesión antes de usar la API
     print("TikTokApi inicializada correctamente.")
 except Exception as e:
