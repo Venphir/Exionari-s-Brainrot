@@ -6,6 +6,8 @@ import os
 from dotenv import load_dotenv
 import json  # Importar módulo para manejar JSON
 import threading  # Importar para manejar el acceso seguro a variables globales
+from discord.ext.commands import cooldown, BucketType
+import time
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
@@ -51,6 +53,29 @@ except ValueError:
 # Lock para manejar el acceso seguro a la variable global themes
 themes_lock = threading.Lock()
 
+# Diccionario para almacenar los últimos mensajes enviados y prevenir duplicados
+last_messages = {}
+
+# Función auxiliar para evitar mensajes duplicados
+async def send_unique_message(ctx, content):
+    # Generar una clave única para el canal y el contenido
+    message_key = f"{ctx.channel.id}:{content}"
+    current_time = time.time()
+    
+    # Verificar si ya se envió un mensaje idéntico recientemente (en los últimos 3 segundos)
+    if message_key in last_messages and current_time - last_messages[message_key] < 3:
+        print(f"Se evitó enviar un mensaje duplicado: {content[:50]}...")
+        return
+    
+    # Registrar el mensaje y enviarlo
+    last_messages[message_key] = current_time
+    await ctx.send(content)
+    
+    # Limpieza de mensajes antiguos (más de 30 segundos)
+    for key in list(last_messages.keys()):
+        if current_time - last_messages[key] > 30:
+            del last_messages[key]
+
 # Función para cargar los temas desde el archivo
 def load_themes():
     global themes
@@ -85,13 +110,14 @@ themes = []
 # Cargar los temas al iniciar el bot
 load_themes()
 
-# Comando para asignar temas (hashtags)
+# Comando para asignar temas (hashtags) con cooldown
 @bot.command(name='asignar_tema')
+@cooldown(1, 3, BucketType.user)  # 1 uso cada 3 segundos por usuario
 async def assign_theme(ctx, *args):
     global themes
     new_themes = list(set(filter(None, args)))  # Filtrar temas vacíos
     if not new_themes:
-        await ctx.send("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.")
+        await send_unique_message(ctx, "Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.")
         return
 
     with themes_lock:
@@ -100,44 +126,47 @@ async def assign_theme(ctx, *args):
 
         # Solo un mensaje de respuesta, según el caso
         if already_added and not new_to_add:
-            await ctx.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}.\nTemas actuales: {', '.join(themes)}")
+            await send_unique_message(ctx, f"Los siguientes temas ya están agregados: {', '.join(already_added)}.\nTemas actuales: {', '.join(themes)}")
         elif new_to_add and not already_added:
             themes.extend(new_to_add)
             save_themes()
-            await ctx.send(f"Nuevos temas agregados: {', '.join(new_to_add)}.\nTemas actuales: {', '.join(themes)}")
+            await send_unique_message(ctx, f"Nuevos temas agregados: {', '.join(new_to_add)}.\nTemas actuales: {', '.join(themes)}")
         elif new_to_add and already_added:
             themes.extend(new_to_add)
             save_themes()
-            await ctx.send(
+            await send_unique_message(ctx, 
                 f"Los siguientes temas ya estaban agregados: {', '.join(already_added)}.\n"
                 f"Nuevos temas agregados: {', '.join(new_to_add)}.\n"
                 f"Temas actuales: {', '.join(themes)}"
             )
 
-# Comando para eliminar un tema (hashtag)
+# Comando para eliminar un tema (hashtag) con cooldown
 @bot.command(name='eliminar_tema')
+@cooldown(1, 3, BucketType.user)  # 1 uso cada 3 segundos por usuario
 async def remove_theme(ctx, theme: str):
     global themes
     with themes_lock:  # Asegurar acceso seguro a la variable global
         if theme in themes:
             themes.remove(theme)
             save_themes()  # Guardar los temas actualizados
-            await ctx.send(f'Tema eliminado: {theme}')
+            await send_unique_message(ctx, f'Tema eliminado: {theme}')
         else:
-            await ctx.send(f'El tema "{theme}" no se encuentra en la lista.')
+            await send_unique_message(ctx, f'El tema "{theme}" no se encuentra en la lista.')
 
-# Comando para ver todos los temas asignados
+# Comando para ver todos los temas asignados con cooldown
 @bot.command(name='ver_temas')
+@cooldown(1, 3, BucketType.user)  # 1 uso cada 3 segundos por usuario
 async def view_themes(ctx):
     global themes
     with themes_lock:  # Asegurar acceso seguro a la variable global
         if themes:
-            await ctx.send(f'Temas asignados: {", ".join(themes)}')
+            await send_unique_message(ctx, f'Temas asignados: {", ".join(themes)}')
         else:
-            await ctx.send("No hay temas asignados actualmente.")
+            await send_unique_message(ctx, "No hay temas asignados actualmente.")
 
-# Comando de ayuda para mostrar información sobre los comandos del bot
-@bot.command(name='ayuda')  # Cambiar el nombre del comando a 'ayuda'
+# Comando de ayuda con cooldown
+@bot.command(name='ayuda')
+@cooldown(1, 5, BucketType.user)  # 1 uso cada 5 segundos por usuario
 async def help_command(ctx):
     help_message = """
 **Lista de comandos disponibles:**
@@ -166,7 +195,7 @@ async def help_command(ctx):
 - Los temas asignados se guardan de manera persistente y no se pierden al reiniciar el bot.
 - Asegúrate de que el bot tenga permisos para enviar mensajes y enlaces en el canal correspondiente.
 """
-    await ctx.send(help_message)
+    await send_unique_message(ctx, help_message)
 
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=1)
@@ -283,6 +312,15 @@ async def on_ready():
         send_random_video.start()
     except Exception as e:
         print(f"Error al iniciar la tarea periódica: {e}")
+
+# Evento para manejar errores de cooldown
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        remaining = round(error.retry_after, 1)
+        await ctx.send(f"Por favor espera {remaining}s antes de usar este comando nuevamente.", delete_after=5)
+    else:
+        print(f"Error no manejado: {error}")
 
 # Cargar el token desde el archivo .env
 token = os.getenv('BOT_TOKEN')
