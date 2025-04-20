@@ -73,13 +73,16 @@ async def assign_theme(ctx, *args):
     already_added = [theme for theme in new_themes if theme in themes]
     new_to_add = [theme for theme in new_themes if theme not in themes]
 
+    messages = []
     if already_added:
-        await ctx.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}")
+        messages.append(f"Los siguientes temas ya están agregados: {', '.join(already_added)}")
     if new_to_add:
         themes.extend(new_to_add)
         save_themes()  # Guardar los temas actualizados
-        await ctx.send(f"Nuevos temas agregados: {', '.join(new_to_add)}")
-    await ctx.send(f'Temas actuales: {", ".join(themes)}')
+        messages.append(f"Nuevos temas agregados: {', '.join(new_to_add)}")
+    
+    messages.append(f'Temas actuales: {", ".join(themes)}')
+    await ctx.send("\n".join(messages))
 
 # Comando para eliminar un tema (hashtag)
 @bot.command(name='eliminar_tema')
