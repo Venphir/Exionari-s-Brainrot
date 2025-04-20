@@ -1,12 +1,11 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
 from TikTokApi import TikTokApi
 import random
-import asyncio
 import os
 from dotenv import load_dotenv
 import json  # Importar módulo para manejar JSON
+import threading  # Importar para manejar el acceso seguro a variables globales
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
@@ -32,6 +31,20 @@ except Exception as e:
 # Ruta del archivo para almacenar los temas
 themes_file = "themes.json"
 
+# Configuración del canal desde el archivo .env
+channel_id = os.getenv("DISCORD_CHANNEL_ID")
+if not channel_id:
+    raise ValueError("El ID del canal no se ha encontrado. Asegúrate de que el archivo .env contiene 'DISCORD_CHANNEL_ID'.")
+
+# Validar y convertir el ID del canal a entero
+try:
+    channel_id = int(channel_id)
+except ValueError:
+    raise ValueError("El ID del canal proporcionado en el archivo .env no es un número válido.")
+
+# Lock para manejar el acceso seguro a la variable global themes
+themes_lock = threading.Lock()
+
 # Función para cargar los temas desde el archivo
 def load_themes():
     global themes
@@ -40,6 +53,9 @@ def load_themes():
             with open(themes_file, "r", encoding="utf-8") as f:
                 themes = json.load(f)
                 print(f"Temas cargados: {themes}")
+        except json.JSONDecodeError:
+            print("Error: El archivo themes.json está corrupto. Se reiniciará la lista de temas.")
+            themes = []
         except Exception as e:
             print(f"Error al cargar los temas desde el archivo: {e}")
             themes = []
@@ -49,8 +65,10 @@ def load_themes():
 # Función para guardar los temas en el archivo
 def save_themes():
     try:
+        with themes_lock:  # Asegurar acceso seguro a la variable global
+            themes_copy = themes[:]  # Crear una copia de la lista para evitar conflictos
         with open(themes_file, "w", encoding="utf-8") as f:
-            json.dump(themes, f, ensure_ascii=False, indent=4)
+            json.dump(themes_copy, f, ensure_ascii=False, indent=4)
             print("Temas guardados correctamente.")
     except Exception as e:
         print(f"Error al guardar los temas en el archivo: {e}")
@@ -67,42 +85,45 @@ async def assign_theme(ctx, *args):
     global themes
     new_themes = list(set(filter(None, args)))  # Filtrar temas vacíos
     if not new_themes:
-        await ctx.send("No se pueden agregar temas vacíos. Por favor, proporciona al menos un tema válido.")
+        await ctx.send("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.")
         return
 
-    already_added = [theme for theme in new_themes if theme in themes]
-    new_to_add = [theme for theme in new_themes if theme not in themes]
+    with themes_lock:  # Asegurar acceso seguro a la variable global
+        already_added = [theme for theme in new_themes if theme in themes]
+        new_to_add = [theme for theme in new_themes if theme not in themes]
 
-    messages = []
-    if already_added:
-        messages.append(f"Los siguientes temas ya están agregados: {', '.join(already_added)}")
-    if new_to_add:
-        themes.extend(new_to_add)
-        save_themes()  # Guardar los temas actualizados
-        messages.append(f"Nuevos temas agregados: {', '.join(new_to_add)}")
-    
-    messages.append(f'Temas actuales: {", ".join(themes)}')
+        messages = []
+        if already_added:
+            messages.append(f"Los siguientes temas ya están agregados: {', '.join(already_added)}")
+        if new_to_add:
+            themes.extend(new_to_add)
+            save_themes()  # Guardar los temas actualizados
+            messages.append(f"Nuevos temas agregados: {', '.join(new_to_add)}")
+
+        messages.append(f'Temas actuales: {", ".join(themes)}')
     await ctx.send("\n".join(messages))
 
 # Comando para eliminar un tema (hashtag)
 @bot.command(name='eliminar_tema')
 async def remove_theme(ctx, theme: str):
     global themes
-    if theme in themes:
-        themes.remove(theme)
-        save_themes()  # Guardar los temas actualizados
-        await ctx.send(f'Tema eliminado: {theme}')
-    else:
-        await ctx.send(f'El tema "{theme}" no se encuentra en la lista.')
+    with themes_lock:  # Asegurar acceso seguro a la variable global
+        if theme in themes:
+            themes.remove(theme)
+            save_themes()  # Guardar los temas actualizados
+            await ctx.send(f'Tema eliminado: {theme}')
+        else:
+            await ctx.send(f'El tema "{theme}" no se encuentra en la lista.')
 
 # Comando para ver todos los temas asignados
 @bot.command(name='ver_temas')
 async def view_themes(ctx):
     global themes
-    if themes:
-        await ctx.send(f'Temas asignados: {", ".join(themes)}')
-    else:
-        await ctx.send("No hay temas asignados actualmente.")
+    with themes_lock:  # Asegurar acceso seguro a la variable global
+        if themes:
+            await ctx.send(f'Temas asignados: {", ".join(themes)}')
+        else:
+            await ctx.send("No hay temas asignados actualmente.")
 
 # Comando de ayuda para mostrar información sobre los comandos del bot
 @bot.command(name='help')
@@ -139,18 +160,21 @@ async def help_command(ctx):
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=1)
 async def send_random_video():
-    if not themes:
-        print("No hay temas asignados. La tarea no se ejecutará.")
+    global themes
+    if not api:
+        print("Error: TikTokApi no está configurada correctamente. La tarea no se ejecutará.")
         return
 
-    theme = random.choice(themes)
+    with themes_lock:  # Asegurar acceso seguro a la variable global
+        if not themes:
+            print("No hay temas asignados. La tarea no se ejecutará.")
+            return
+
+        theme = random.choice(themes)
+
     print(f"Seleccionado tema: {theme}")
 
     try:
-        if not api:
-            print("Error: TikTokApi no está configurada correctamente.")
-            return
-
         videos = api.by_hashtag(theme.lstrip('#'), count=10)
         if not videos:
             print(f"No se encontraron videos para el tema: {theme}")
@@ -160,7 +184,7 @@ async def send_random_video():
         video_url = f"https://www.tiktok.com/@{video['author']['uniqueId']}/video/{video['id']}"
         print(f"Video seleccionado: {video_url}")
 
-        channel = bot.get_channel(1363398384890941611)
+        channel = bot.get_channel(channel_id)
         if channel is None:
             print("Error: No se pudo encontrar el canal. Verifica el ID del canal.")
             return
@@ -184,16 +208,17 @@ async def send_random_video():
 # Comando de aplicación (slash command) para enviar un video aleatorio
 @bot.tree.command(name="enviar_video", description="Envía un video aleatorio de TikTok basado en los temas asignados")
 async def enviar_video(interaction: discord.Interaction):
+    global themes
     if not themes:
         await interaction.response.send_message("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.", ephemeral=True)
         return
 
+    if not api:
+        await interaction.response.send_message("Error: TikTokApi no está configurada correctamente.", ephemeral=True)
+        return
+
     theme = random.choice(themes)
     try:
-        if not api:
-            await interaction.response.send_message("Error: TikTokApi no está configurada correctamente.", ephemeral=True)
-            return
-
         videos = api.by_hashtag(theme.lstrip('#'), count=10)
         if not videos:
             await interaction.response.send_message(f"No se encontraron videos para el tema: {theme}", ephemeral=True)
@@ -201,6 +226,13 @@ async def enviar_video(interaction: discord.Interaction):
 
         video = random.choice(videos)
         video_url = f"https://www.tiktok.com/@{video['author']['uniqueId']}/video/{video['id']}"
+
+        permissions = interaction.channel.permissions_for(interaction.guild.me)
+        if not permissions.send_messages:
+            await interaction.response.send_message("Error: El bot no tiene permisos para enviar mensajes en este canal.", ephemeral=True)
+            return
+        if not permissions.embed_links:
+            await interaction.response.send_message("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.", ephemeral=True)
 
         await interaction.response.send_message(f"Aquí tienes un video de {theme}: {video_url}")
     except discord.Forbidden:
@@ -220,7 +252,7 @@ async def on_ready():
         print("Comandos de aplicación sincronizados.")
 
         # Validar que el bot tiene acceso al canal
-        channel = bot.get_channel(1363398384890941611)
+        channel = bot.get_channel(channel_id)  # No es necesario convertir nuevamente
         if channel is None:
             print("Error: No se pudo encontrar el canal. Verifica el ID del canal.")
         else:
