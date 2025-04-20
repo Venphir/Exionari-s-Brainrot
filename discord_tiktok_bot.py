@@ -229,6 +229,278 @@ async def help_command(ctx):
     
     await ctx.send(embed=embed)
 
+# --- COMANDOS DE APLICACIÓN (SLASH COMMANDS) ---
+
+@bot.tree.command(name="asignar_tema", description="Asigna uno o más temas/hashtags para buscar videos de TikTok")
+async def slash_assign_theme(interaction: discord.Interaction, temas: str):
+    global themes
+    
+    # Dividir los temas ingresados (separados por espacios)
+    args = temas.split()
+    new_themes = list(set(filter(None, args)))  # Filtrar temas vacíos
+    
+    if not new_themes:
+        await interaction.response.send_message("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.", ephemeral=True)
+        return
+
+    # Responder inmediatamente
+    await interaction.response.defer(ephemeral=False)
+    
+    already_added = [theme for theme in new_themes if theme in themes]
+    new_to_add = [theme for theme in new_themes if theme not in themes]
+
+    # Solo un mensaje de respuesta, según el caso
+    if already_added and not new_to_add:
+        await interaction.followup.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}.\nTemas actuales: {', '.join(themes)}")
+    elif new_to_add and not already_added:
+        themes.extend(new_to_add)
+        save_themes()
+        await interaction.followup.send(f"Nuevos temas agregados: {', '.join(new_to_add)}.\nTemas actuales: {', '.join(themes)}")
+    elif new_to_add and already_added:
+        themes.extend(new_to_add)
+        save_themes()
+        await interaction.followup.send(
+            f"Los siguientes temas ya estaban agregados: {', '.join(already_added)}.\n"
+            f"Nuevos temas agregados: {', '.join(new_to_add)}.\n"
+            f"Temas actuales: {', '.join(themes)}"
+        )
+
+@bot.tree.command(name="eliminar_tema", description="Elimina un tema/hashtag de la lista")
+async def slash_remove_theme(interaction: discord.Interaction, tema: str):
+    global themes
+    
+    if tema in themes:
+        themes.remove(tema)
+        save_themes()
+        await interaction.response.send_message(f'✅ Tema eliminado: {tema}')
+    else:
+        await interaction.response.send_message(f'❌ El tema "{tema}" no se encuentra en la lista.')
+
+@bot.tree.command(name="ver_temas", description="Muestra todos los temas/hashtags actualmente asignados")
+async def slash_view_themes(interaction: discord.Interaction):
+    global themes
+    
+    if themes:
+        await interaction.response.send_message(f'📋 Temas asignados: {", ".join(themes)}')
+    else:
+        await interaction.response.send_message("📋 No hay temas asignados actualmente.")
+
+@bot.tree.command(name="ayuda", description="Muestra la lista de comandos disponibles")
+async def slash_help_command(interaction: discord.Interaction):
+    # Crear un embed con colores y formato profesional
+    embed = discord.Embed(
+        title="📱 Ayuda del Bot Brainrot",
+        description="Aquí encontrarás todos los comandos disponibles para interactuar con el bot.",
+        color=0xFF0050  # Rosa TikTok
+    )
+    
+    # Agregar thumbnail (icono pequeño en la esquina)
+    embed.set_thumbnail(url="https://i.imgur.com/OGwYwj9.png")  # Logo de TikTok
+    
+    # Comandos para gestión de temas
+    embed.add_field(
+        name="🏷️ Gestión de Temas",
+        value=(
+            "**`/asignar_tema`** o **`_asignar_tema`**\n"
+            "➡️ Asigna uno o más temas (hashtags) para buscar videos.\n"
+            "➡️ Ejemplo: `/asignar_tema temas:#meme #funny` o `_asignar_tema #meme #funny`\n\n"
+            
+            "**`/eliminar_tema`** o **`_eliminar_tema`**\n"
+            "➡️ Elimina un tema de la lista.\n"
+            "➡️ Ejemplo: `/eliminar_tema tema:#meme` o `_eliminar_tema #meme`\n\n"
+            
+            "**`/ver_temas`** o **`_ver_temas`**\n"
+            "➡️ Muestra los temas actualmente asignados."
+        ),
+        inline=False
+    )
+    
+    # Comandos para videos
+    embed.add_field(
+        name="🎬 Videos de TikTok",
+        value=(
+            "**`/enviar_video`** o **`_enviar_video`**\n"
+            "➡️ Envía un video aleatorio de TikTok basado en los temas asignados.\n"
+            "➡️ El comando slash aparece en el menú al escribir `/`"
+        ),
+        inline=False
+    )
+    
+    # Comandos de ayuda
+    embed.add_field(
+        name="❓ Ayuda",
+        value=(
+            "**`/ayuda`** o **`_ayuda`**\n"
+            "➡️ Muestra este mensaje de ayuda."
+        ),
+        inline=False
+    )
+    
+    # Nota adicional
+    embed.add_field(
+        name="📝 Notas",
+        value=(
+            "• Puedes usar comandos con barra diagonal (`/`) o con prefijo (`_`).\n"
+            "• Los temas asignados se guardan automáticamente.\n"
+            "• Para que el bot funcione correctamente, debe tener permisos para enviar mensajes y archivos."
+        ),
+        inline=False
+    )
+    
+    # Pie de página
+    embed.set_footer(text=f"Bot TikTok • Solicitado por {interaction.user.name}", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
+    
+    # Agregar timestamp
+    embed.timestamp = discord.utils.utcnow()
+    
+    await interaction.response.send_message(embed=embed)
+
+# --- COMANDOS CON PREFIJO ---
+
+# Comando con prefijo para enviar un video (complemento al comando slash existente)
+@bot.command(name='enviar_video')
+async def prefix_send_video(ctx):
+    global themes
+    
+    # Evitar procesamiento duplicado
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    if not themes:
+        await ctx.send("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.")
+        return
+
+    if not api:
+        await ctx.send("Error: TikTokApi no está configurada correctamente.")
+        return
+
+    # Informar al usuario
+    loading_msg = await ctx.send("🔍 Buscando un video aleatorio... Por favor espera.")
+    
+    try:
+        # Seleccionar un tema aleatorio
+        theme = random.choice(themes)
+        
+        # Obtener videos (puede tardar)
+        hashtag_data = api.hashtag(name=theme.lstrip('#'))
+        videos = []
+        async for video in hashtag_data.videos(count=10):
+            videos.append(video)
+            
+        if not videos:
+            await ctx.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
+            return
+
+        # Seleccionar un video aleatorio
+        video = random.choice(videos)
+        video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
+        
+        # Actualizar el mensaje
+        await loading_msg.edit(content=f"⬇️ Descargando video de **{theme}**... Por favor espera.")
+        
+        # Descargar el video
+        video_file = await download_tiktok_video(video_url)
+        
+        if video_file:
+            # Enviar el video como archivo
+            await ctx.send(
+                content=f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {video_url}",
+                file=discord.File(video_file)
+            )
+            # Eliminar el mensaje de carga
+            try:
+                await loading_msg.delete()
+            except:
+                pass
+            # Eliminar el archivo temporal
+            os.remove(video_file)
+        else:
+            await ctx.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {video_url}")
+            
+    except Exception as e:
+        error_msg = str(e)
+        await ctx.send(f"❌ Error al obtener el video: {error_msg}")
+        print(f"Error en _enviar_video: {error_msg}")
+
+# Actualizar el comando de ayuda con prefijo para mostrar ambas opciones
+@bot.command(name='ayuda')
+async def help_command(ctx):
+    # Evitar procesamiento duplicado
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    # Crear un embed con colores y formato profesional
+    embed = discord.Embed(
+        title="📱 Ayuda del Bot Brainrot",
+        description="Aquí encontrarás todos los comandos disponibles para interactuar con el bot.",
+        color=0xFF0050  # Rosa TikTok
+    )
+    
+    # Agregar thumbnail (icono pequeño en la esquina)
+    embed.set_thumbnail(url="https://i.imgur.com/OGwYwj9.png")  # Logo de TikTok
+    
+    # Comandos para gestión de temas
+    embed.add_field(
+        name="🏷️ Gestión de Temas",
+        value=(
+            "**`/asignar_tema`** o **`_asignar_tema`**\n"
+            "➡️ Asigna uno o más temas (hashtags) para buscar videos.\n"
+            "➡️ Ejemplo: `/asignar_tema temas:#meme #funny` o `_asignar_tema #meme #funny`\n\n"
+            
+            "**`/eliminar_tema`** o **`_eliminar_tema`**\n"
+            "➡️ Elimina un tema de la lista.\n"
+            "➡️ Ejemplo: `/eliminar_tema tema:#meme` o `_eliminar_tema #meme`\n\n"
+            
+            "**`/ver_temas`** o **`_ver_temas`**\n"
+            "➡️ Muestra los temas actualmente asignados."
+        ),
+        inline=False
+    )
+    
+    # Comandos para videos
+    embed.add_field(
+        name="🎬 Videos de TikTok",
+        value=(
+            "**`/enviar_video`** o **`_enviar_video`**\n"
+            "➡️ Envía un video aleatorio de TikTok basado en los temas asignados.\n"
+            "➡️ El comando slash aparece en el menú al escribir `/`"
+        ),
+        inline=False
+    )
+    
+    # Comandos de ayuda
+    embed.add_field(
+        name="❓ Ayuda",
+        value=(
+            "**`/ayuda`** o **`_ayuda`**\n"
+            "➡️ Muestra este mensaje de ayuda."
+        ),
+        inline=False
+    )
+    
+    # Nota adicional
+    embed.add_field(
+        name="📝 Notas",
+        value=(
+            "• Puedes usar comandos con barra diagonal (`/`) o con prefijo (`_`).\n"
+            "• Los temas asignados se guardan automáticamente.\n"
+            "• Para que el bot funcione correctamente, debe tener permisos para enviar mensajes y archivos."
+        ),
+        inline=False
+    )
+    
+    # Pie de página
+    embed.set_footer(text=f"Bot TikTok • Solicitado por {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+    
+    # Agregar timestamp
+    embed.timestamp = discord.utils.utcnow()
+    
+    await ctx.send(embed=embed)
+
 # Limpieza periódica de timestamps antiguos
 @tasks.loop(minutes=5)
 async def clean_timestamps():
