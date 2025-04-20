@@ -23,7 +23,7 @@ bot = commands.Bot(command_prefix='_', intents=intents)
 
 # Configuración de la API de TikTok
 try:
-    api = TikTokApi.get_instance(use_test_endpoints=True)
+    api = TikTokApi()
 except Exception as e:
     print(f"Error al inicializar TikTokApi: {e}")
     api = None
@@ -32,7 +32,7 @@ except Exception as e:
 themes_file = "themes.json"
 
 # Configuración del canal desde el archivo .env
-channel_id = os.getenv("1363398384890941611")
+channel_id = os.getenv("DISCORD_CHANNEL_ID")  # Usar el nombre correcto de la variable de entorno
 if not channel_id:
     raise ValueError("El ID del canal no se ha encontrado. Asegúrate de que el archivo .env contiene 'DISCORD_CHANNEL_ID'.")
 
