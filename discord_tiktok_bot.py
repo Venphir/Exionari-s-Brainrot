@@ -35,7 +35,11 @@ themes = []
 @bot.command(name='asignar_tema')
 async def assign_theme(ctx, *args):
     global themes
-    new_themes = list(set(args))
+    new_themes = list(set(filter(None, args)))  # Filtrar temas vacíos
+    if not new_themes:
+        await ctx.send("No se pueden agregar temas vacíos. Por favor, proporciona al menos un tema válido.")
+        return
+
     already_added = [theme for theme in new_themes if theme in themes]
     new_to_add = [theme for theme in new_themes if theme not in themes]
 
