@@ -23,8 +23,10 @@ bot = commands.Bot(command_prefix='_', intents=intents)
 
 # Configuración de la API de TikTok
 try:
-    api = TikTokApi()
+    # Inicializar TikTokApi con configuración adicional si es necesario
+    api = TikTokApi(custom_verify_fp="verify_kh1234567890abcdef")  # Reemplaza con tu verify_fp si es necesario
     api.create_session()  # Crear una sesión antes de usar la API
+    print("TikTokApi inicializada correctamente.")
 except Exception as e:
     print(f"Error al inicializar TikTokApi: {e}")
     api = None
