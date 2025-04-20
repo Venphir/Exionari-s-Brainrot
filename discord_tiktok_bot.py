@@ -131,7 +131,7 @@ async def on_ready():
                     print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
         
         # Iniciar tareas programadas
-        # send_random_video.start()
+        send_random_video.start()
         clean_timestamps.start()
         
         # Conectar a Instagram en segundo plano
@@ -250,7 +250,7 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True):
     videos_info = []
 
     # 1. Intentar usar el caché, pero validar los enlaces
-    if use_cache and hashtag_clean in theme_video_registry:
+    if use_cache & hashtag_clean in theme_video_registry:
         cached_videos = theme_video_registry.get(hashtag_clean, [])
         valid_videos = []
         for video in cached_videos:
@@ -479,14 +479,222 @@ async def slash_help_command(interaction: discord.Interaction):
 # Comando con prefijo para enviar un video
 @bot.command(name='enviar_video')
 async def prefix_send_video(ctx):
-    global themes
+    global themes, instagram_connected
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
     message_timestamps[ctx.message.id] = now
+    
     if not themes:
         await ctx.send("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.")
         return
+    
+    if not instagram_connected:
+        await ctx.send("⌛ La conexión con Instagram aún está en proceso. Por favor espera unos segundos e intenta nuevamente.")
+        return
+    
+    loading_msg = await ctx.send("🔍 Buscando un Reel aleatorio... Por favor espera.")
+    try:
+        # Seleccionar un tema aleatorio
+        theme = random.choice(themes)
+        print(f"[_enviar_video] Tema seleccionado: {theme}")
+        
+        # Buscar reels para el tema
+        await loading_msg.edit(content=f"🔍 Buscando Reels para **{theme}**... Por favor espera.")
+        videos = await get_instagram_reels_by_hashtag(theme, count=5)
+        
+        if not videos:
+            await ctx.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema.")
+            try:
+                await loading_msg.delete()
+            except:
+                pass
+            return
+            
+        # Seleccionar un video aleatorio
+        video_info = random.choice(videos)
+        video_url = video_info['url']
+        
+        # Enviar el video
+        content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{video_url}"
+        await ctx.send(content=content_msg)
+        
+        # Eliminar mensaje de carga
+        try:
+            await loading_msg.delete()
+        except:
+            pass
+            
+    except Exception as e:
+        error_msg = str(e)
+        await ctx.send(f"❌ Error al obtener el Reel: {error_msg}")
+        print(f"Error en _enviar_video: {error_msg}")
+        traceback.print_exc()
+
+# Comando slash para enviar un video
+@bot.tree.command(name="enviar_video", description="Envía un Instagram Reel aleatorio basado en los temas asignados")
+async def slash_send_video(interaction: discord.Interaction):
+    global themes, instagram_connected
+    
+    if not themes:
+        await interaction.response.send_message("No hay temas asignados. Usa `/asignar_tema` para añadir algunos.", ephemeral=True)
+        return
+    
+    if not instagram_connected:
+        await interaction.response.send_message("⌛ La conexión con Instagram aún está en proceso. Por favor espera unos segundos e intenta nuevamente.", ephemeral=True)
+        return
+    
+    # Responder inmediatamente para evitar timeout
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        # Seleccionar tema aleatorio
+        theme = random.choice(themes)
+        print(f"[/enviar_video] Tema seleccionado: {theme}")
+        
+        # Informar al usuario
+        searching_msg = await interaction.followup.send(f"🔍 Buscando Reels de **{theme}**... Por favor espera.")
+        
+        # Buscar videos
+        videos = await get_instagram_reels_by_hashtag(theme, count=5)
+        
+        if not videos:
+            await interaction.followup.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema.")
+            return
+            
+        # Seleccionar video aleatorio
+        video_info = random.choice(videos)
+        video_url = video_info['url']
+        
+        # Enviar el video
+        content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{video_url}"
+        await interaction.followup.send(content=content_msg)
+        
+        # Eliminar mensaje de búsqueda
+        try:
+            await searching_msg.delete()
+        except:
+            pass
+            
+    except Exception as e:
+        error_msg = str(e)
+        await interaction.followup.send(f"❌ Error al obtener el Reel: {error_msg}")
+        print(f"Error en /enviar_video: {error_msg}")
+        traceback.print_exc()
+
+# Comando para enviar un Reel específico
+@bot.tree.command(name="video_directo", description="Envía un Reel específico dado su URL de Instagram")
+async def video_directo(interaction: discord.Interaction, url: str):
+    if 'instagram.com' not in url:
+        await interaction.response.send_message("❌ Por favor proporciona una URL válida de Instagram Reels.", ephemeral=True)
+        return
+        
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        # Verificar si el enlace es válido
+        searching_msg = await interaction.followup.send("⬇️ Verificando enlace... Por favor espera.")
+        
+        is_valid = await is_valid_instagram_url(url)
+        if not is_valid:
+            await interaction.followup.send("❌ El enlace proporcionado no es válido o el Reel no está disponible.")
+            try:
+                await searching_msg.delete()
+            except:
+                pass
+            return
+            
+        # Si es válido, enviarlo
+        await interaction.followup.send(f"📱 Aquí tienes tu Reel de Instagram: {url}")
+        
+        # Eliminar mensaje de búsqueda
+        try:
+            await searching_msg.delete()
+        except:
+            pass
+            
+    except Exception as e:
+        error_msg = str(e)
+        await interaction.followup.send(f"❌ Error al procesar el Reel: {error_msg}")
+        print(f"Error en video_directo: {error_msg}")
+
+# Comando con prefijo para enviar un Reel específico
+@bot.command(name='video_directo')
+async def prefix_video_directo(ctx, url: str):
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    if 'instagram.com' not in url:
+        await ctx.send("❌ Por favor proporciona una URL válida de Instagram Reels.")
+        return
+        
+    # Informar al usuario
+    loading_msg = await ctx.send("⬇️ Verificando enlace... Por favor espera.")
+    
+    try:
+        # Verificar si el enlace es válido
+        is_valid = await is_valid_instagram_url(url)
+        if not is_valid:
+            await ctx.send("❌ El enlace proporcionado no es válido o el Reel no está disponible.")
+            try:
+                await loading_msg.delete()
+            except:
+                pass
+            return
+                
+        # Si es válido, enviarlo
+        await ctx.send(f"📱 Aquí tienes tu Reel de Instagram: {url}")
+        
+        # Eliminar mensaje de carga
+        try:
+            await loading_msg.delete()
+        except:
+            pass
+            
+    except Exception as e:
+        error_msg = str(e)
+        await ctx.send(f"❌ Error: {error_msg}")
+        print(f"Error en _video_directo: {error_msg}")
+
+# Tarea periódica para enviar videos aleatorios
+@tasks.loop(hours=12)  # Cada 12 horas - ajusta según necesites
+async def send_random_video():
+    global themes, instagram_connected, channel_id
+    
+    if not themes or not instagram_connected or not channel_id:
+        print("No se puede ejecutar la tarea automática: faltan temas, conexión a Instagram o ID del canal.")
+        return
+        
+    try:
+        # Obtener el canal
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            print(f"No se pudo encontrar el canal con ID {channel_id}")
+            return
+            
+        # Seleccionar un tema aleatorio
+        theme = random.choice(themes)
+        print(f"[Tarea automática] Tema seleccionado: {theme}")
+        
+        # Buscar Reels
+        videos = await get_instagram_reels_by_hashtag(theme, count=5)
+        if not videos:
+            print(f"No se encontraron Reels para el tema: {theme}")
+            return
+            
+        # Seleccionar uno aleatoriamente
+        video_info = random.choice(videos)
+        video_url = video_info['url']
+        
+        # Enviar al canal
+        await channel.send(f"📱 Reel automático de **{theme}**:\n{video_url}")
+        print(f"Reel enviado automáticamente para el tema: {theme}")
+        
+    except Exception as e:
+        print(f"Error en la tarea automática: {e}")
+        traceback.print_exc()
 
 # Tarea para limpiar mensajes temporales
 @tasks.loop(minutes=5)
