@@ -36,7 +36,14 @@ themes = []
 async def assign_theme(ctx, *args):
     global themes
     new_themes = list(set(args))
-    themes = list(set(themes + new_themes))
+    already_added = [theme for theme in new_themes if theme in themes]
+    new_to_add = [theme for theme in new_themes if theme not in themes]
+
+    if already_added:
+        await ctx.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}")
+    if new_to_add:
+        themes.extend(new_to_add)
+        await ctx.send(f"Nuevos temas agregados: {', '.join(new_to_add)}")
     await ctx.send(f'Temas actuales: {", ".join(themes)}')
 
 # Comando para eliminar un tema (hashtag)
