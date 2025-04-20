@@ -4,7 +4,8 @@ import json
 import time
 import random
 import pickle
-import asyncio  # Python's built-in async library
+import asyncio
+import traceback
 
 # Third-party imports
 import discord
@@ -88,6 +89,153 @@ def save_themes():
 themes = []
 load_themes()
 
+# Nueva función para validar si un enlace de TikTok es accesible
+async def is_valid_tiktok_url(url):
+    """Verifica si un enlace de TikTok es válido y accesible."""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+    try:
+        # Usamos HEAD para minimizar el uso de datos, pero algunas URLs de TikTok requieren GET
+        response = http_requests.head(url, headers=headers, timeout=5, allow_redirects=True)
+        if response.status_code == 405 or response.status_code == 403:
+            # HEAD no permitido, intentamos con GET
+            response = http_requests.get(url, headers=headers, timeout=5, allow_redirects=True, stream=True)
+        if response.status_code == 200:
+            # Verificamos si el contenido indica que el video no está disponible
+            if "This video is not available" in response.text or "video unavailable" in response.text.lower():
+                return False
+            return True
+        return False
+    except (http_requests.exceptions.RequestException, http_requests.exceptions.Timeout):
+        return False
+
+# Función para buscar videos por hashtag (modificada para validar enlaces)
+async def get_tiktok_videos_by_hashtag(hashtag, count=5, use_cache=True):
+    global theme_video_registry
+    print(f"Buscando videos para hashtag: {hashtag}")
+    hashtag_clean = hashtag.lstrip('#').lower()
+    videos_info = []
+
+    # 1. Intentar usar el caché, pero validar los enlaces
+    if use_cache and hashtag_clean in theme_video_registry:
+        cached_videos = theme_video_registry.get(hashtag_clean, [])
+        valid_videos = []
+        for video in cached_videos:
+            if await is_valid_tiktok_url(video['url']):
+                valid_videos.append(video)
+            else:
+                print(f"Enlace no válido eliminado del caché: {video['url']}")
+        if valid_videos:
+            print(f"Usando videos en caché para {hashtag_clean}, {len(valid_videos)} disponibles")
+            random.shuffle(valid_videos)
+            videos_info = valid_videos[:count]
+            # Actualizar el caché con solo los enlaces válidos
+            theme_video_registry[hashtag_clean] = valid_videos
+            try:
+                with open(THEME_VIDEO_REGISTRY, "wb") as f:
+                    pickle.dump(theme_video_registry, f)
+                print(f"Caché actualizado para '{hashtag_clean}' con {len(valid_videos)} videos válidos")
+            except Exception as e:
+                print(f"Error al actualizar caché: {e}")
+
+    # 2. Si no hay suficientes videos válidos en caché, buscar nuevos
+    if len(videos_info) < count:
+        try:
+            urls_to_try = [
+                f"https://tiktokder.com/api/short/search?keyword={hashtag_clean}&count=10",
+                f"https://www.tiktok.com/api/search/general/full/?keyword={hashtag_clean}&is_filter_word=0&from_page=search",
+                f"https://www.tikwm.com/api/feed/search?keywords={hashtag_clean}"
+            ]
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+                'Referer': 'https://www.google.com/',
+                'Origin': 'https://www.google.com',
+                'Sec-Fetch-Site': 'cross-site',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Dest': 'empty',
+            }
+            temp_videos = []
+            for api_url in urls_to_try:
+                try:
+                    response = http_requests.get(api_url, headers=headers, timeout=15)
+                    response.raise_for_status()
+                    data = response.json()
+                    if "data" in data and isinstance(data["data"], list):
+                        for item in data["data"][:count*2]:
+                            if item.get('type') == 'video' and 'item' in item:
+                                item_data = item['item']
+                                if 'id' in item_data and 'author' in item_data:
+                                    username = item_data['author'].get('uniqueId', 'tiktok_user')
+                                    video_url = f"https://www.tiktok.com/@{username}/video/{item_data['id']}"
+                                    temp_videos.append({
+                                        'id': item_data['id'],
+                                        'url': video_url,
+                                        'title': item_data.get('desc', f'Video de {username}'),
+                                        'uploader': username
+                                    })
+                    elif "videos" in data:
+                        for video in data["videos"][:count*2]:
+                            if 'video_id' in video:
+                                video_url = f"https://www.tiktok.com/@{video.get('author', 'user')}/video/{video['video_id']}"
+                                temp_videos.append({
+                                    'id': video['video_id'],
+                                    'url': video_url,
+                                    'title': video.get('title', 'Video de TikTok'),
+                                    'uploader': video.get('author', 'TikTok user')
+                                })
+                    elif "items" in data:
+                        for video in data["items"][:count*2]:
+                            if 'id' in video and 'author' in video:
+                                video_url = video.get('share_url', f"https://www.tiktok.com/@{video['author']['unique_id']}/video/{video['id']}")
+                                temp_videos.append({
+                                    'id': video['id'],
+                                    'url': video_url,
+                                    'title': video.get('title', 'Video de TikTok'),
+                                    'uploader': video['author'].get('unique_id', 'TikTok user')
+                                })
+                except http_requests.exceptions.RequestException as e:
+                    print(f"Error de red/HTTP con API {api_url}: {e}")
+                    continue
+                except json.JSONDecodeError as e:
+                    print(f"Error al decodificar JSON de {api_url}: {e}")
+                    continue
+                except Exception as e:
+                    print(f"Error inesperado con API {api_url}: {e}")
+                    continue
+
+            # 3. Validar los enlaces encontrados antes de añadirlos
+            for video in temp_videos:
+                if len(videos_info) >= count:
+                    break
+                if await is_valid_tiktok_url(video['url']):
+                    videos_info.append(video)
+                    print(f"Enlace válido añadido: {video['url']}")
+                else:
+                    print(f"Enlace no válido descartado: {video['url']}")
+
+            # 4. Actualizar el caché con los enlaces válidos
+            if videos_info and use_cache:
+                # Combinar con videos válidos del caché, si existen
+                existing_videos = theme_video_registry.get(hashtag_clean, [])
+                all_videos = videos_info + [v for v in existing_videos if v not in videos_info]
+                theme_video_registry[hashtag_clean] = all_videos
+                try:
+                    with open(THEME_VIDEO_REGISTRY, "wb") as f:
+                        pickle.dump(theme_video_registry, f)
+                    print(f"Videos para '{hashtag_clean}' agregados a caché: {len(videos_info)}")
+                except Exception as e:
+                    print(f"Error al guardar caché de videos: {e}")
+        except Exception as e:
+            print(f"Error general en búsqueda directa: {e}")
+
+    # 5. Si no se encontraron videos válidos, devolver una lista vacía
+    return videos_info[:count]
+
 # Comando para asignar temas (hashtags)
 @bot.command(name='asignar_tema')
 async def assign_theme(ctx, *args):
@@ -98,7 +246,7 @@ async def assign_theme(ctx, *args):
     message_timestamps[ctx.message.id] = now
     new_themes = list(set(filter(None, args)))
     if not new_themes:
-        await ctx.send("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.")
+        await ctx.send("Por favor, proporciona al least un tema válido. Los temas vacíos no son permitidos.")
         return
     already_added = [theme for theme in new_themes if theme in themes]
     new_to_add = [theme for theme in new_themes if theme not in themes]
@@ -261,7 +409,7 @@ async def prefix_send_video(ctx):
         print(f"[_enviar_video] Tema seleccionado: {theme}")
         videos = await get_tiktok_videos_by_hashtag(theme, count=5)
         if not videos:
-            await ctx.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
+            await ctx.send(f"⚠️ No se encontraron videos válidos para el tema: **{theme}**")
             return
         video_info = random.choice(videos)
         video_url = video_info['url']
@@ -278,6 +426,7 @@ async def prefix_send_video(ctx):
         error_msg = str(e)
         await ctx.send(f"❌ Error al obtener el video: {error_msg}")
         print(f"Error en _enviar_video: {error_msg}")
+        traceback.print_exc()
 
 # Comando con prefijo para ayuda
 @bot.command(name='ayuda')
@@ -356,7 +505,7 @@ async def send_random_video():
     print(f"Seleccionado tema: {theme}")
     videos = await get_tiktok_videos_by_hashtag(theme, count=5)
     if not videos:
-        print(f"No se encontraron videos para el tema: {theme}")
+        print(f"No se encontraron videos válidos para el tema: {theme}")
         return
     video_info = random.choice(videos)
     video_url = video_info['url']
@@ -387,7 +536,7 @@ async def enviar_video(interaction: discord.Interaction):
         searching_msg = await interaction.followup.send(f"🔍 Buscando videos de **{theme}**... Por favor espera.")
         videos = await get_tiktok_videos_by_hashtag(theme, count=5)
         if not videos:
-            await interaction.followup.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
+            await interaction.followup.send(f"⚠️ No se encontraron videos válidos para el tema: **{theme}**")
             return
         video_info = random.choice(videos)
         video_url = video_info['url']
@@ -406,7 +555,6 @@ async def enviar_video(interaction: discord.Interaction):
     except Exception as e:
         error_msg = str(e)
         print(f"Error crítico en /enviar_video: {error_msg}")
-        import traceback
         traceback.print_exc()
         await interaction.followup.send(f"❌ Error al obtener el video: {error_msg}")
 
@@ -419,6 +567,9 @@ async def video_directo(interaction: discord.Interaction, url: str):
     await interaction.response.defer(thinking=True)
     try:
         searching_msg = await interaction.followup.send(f"⬇️ Preparando video... Por favor espera.")
+        if not await is_valid_tiktok_url(url):
+            await interaction.followup.send("⚠️ El video no está disponible o no existe. Por favor intenta con otro enlace.")
+            return
         embedez_url = convert_to_embedez(url)
         await interaction.followup.send(f"🎬 ¡Listo! Aquí tienes tu video: {embedez_url}")
         try:
@@ -442,6 +593,9 @@ async def prefix_video_directo(ctx, url: str):
         return
     loading_msg = await ctx.send("⬇️ Preparando video... Por favor espera.")
     try:
+        if not await is_valid_tiktok_url(url):
+            await ctx.send("⚠️ El video no está disponible o no existe. Por favor intenta con otro enlace.")
+            return
         embedez_url = convert_to_embedez(url)
         await ctx.send(f"🎬 ¡Listo! Aquí tienes tu video: {embedez_url}")
         try:
@@ -460,99 +614,6 @@ async def clean_timestamps():
     for msg_id in list(message_timestamps.keys()):
         if now - message_timestamps[msg_id] > 600:  # 10 minutos
             del message_timestamps[msg_id]
-
-# Función para buscar videos por hashtag (mantenida de tu código)
-async def get_tiktok_videos_by_hashtag(hashtag, count=5, use_cache=True):
-    global theme_video_registry
-    print(f"Buscando videos para hashtag: {hashtag}")
-    hashtag_clean = hashtag.lstrip('#').lower()
-    videos_info = []
-
-    if use_cache and hashtag_clean in theme_video_registry:
-        cached_videos = theme_video_registry.get(hashtag_clean, [])
-        if cached_videos:
-            print(f"Usando videos en caché para {hashtag_clean}, {len(cached_videos)} disponibles")
-            random.shuffle(cached_videos)
-            return cached_videos[:count]
-
-    try:
-        urls_to_try = [
-            f"https://tiktokder.com/api/short/search?keyword={hashtag_clean}&count=10",
-            f"https://www.tiktok.com/api/search/general/full/?keyword={hashtag_clean}&is_filter_word=0&from_page=search",
-            f"https://www.tikwm.com/api/feed/search?keywords={hashtag_clean}"
-        ]
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
-            'Referer': 'https://www.google.com/',
-            'Origin': 'https://www.google.com',
-            'Sec-Fetch-Site': 'cross-site',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Dest': 'empty',
-        }
-        for api_url in urls_to_try:
-            try:
-                response = http_requests.get(api_url, headers=headers, timeout=15)
-                response.raise_for_status()
-                data = response.json()
-                if "data" in data and isinstance(data["data"], list):
-                    for item in data["data"][:count*2]:
-                        if item.get('type') == 'video' and 'item' in item:
-                            item_data = item['item']
-                            if 'id' in item_data and 'author' in item_data:
-                                username = item_data['author'].get('uniqueId', 'tiktok_user')
-                                video_url = f"https://www.tiktok.com/@{username}/video/{item_data['id']}"
-                                videos_info.append({
-                                    'id': item_data['id'],
-                                    'url': video_url,
-                                    'title': item_data.get('desc', f'Video de {username}'),
-                                    'uploader': username
-                                })
-                elif "videos" in data:
-                    for video in data["videos"][:count*2]:
-                        if 'video_id' in video:
-                            video_url = f"https://www.tiktok.com/@{video.get('author', 'user')}/video/{video['video_id']}"
-                            videos_info.append({
-                                'id': video['video_id'],
-                                'url': video_url,
-                                'title': video.get('title', 'Video de TikTok'),
-                                'uploader': video.get('author', 'TikTok user')
-                            })
-                elif "items" in data:
-                    for video in data["items"][:count*2]:
-                        if 'id' in video and 'author' in video:
-                            video_url = video.get('share_url', f"https://www.tiktok.com/@{video['author']['unique_id']}/video/{video['id']}")
-                            videos_info.append({
-                                'id': video['id'],
-                                'url': video_url,
-                                'title': video.get('title', 'Video de TikTok'),
-                                'uploader': video['author'].get('unique_id', 'TikTok user')
-                            })
-                if len(videos_info) >= count:
-                    break
-            except http_requests.exceptions.RequestException as e:
-                print(f"Error de red/HTTP con API {api_url}: {e}")
-                continue
-            except json.JSONDecodeError as e:
-                print(f"Error al decodificar JSON de {api_url}: {e}")
-                continue
-            except Exception as e:
-                print(f"Error inesperado con API {api_url}: {e}")
-                continue
-    except Exception as e:
-        print(f"Error general en búsqueda directa: {e}")
-
-    if videos_info and use_cache:
-        theme_video_registry[hashtag_clean] = videos_info
-        try:
-            with open(THEME_VIDEO_REGISTRY, "wb") as f:
-                pickle.dump(theme_video_registry, f)
-            print(f"Videos para '{hashtag_clean}' agregados a caché: {len(videos_info)}")
-        except Exception as e:
-            print(f"Error al guardar caché de videos: {e}")
-
-    return videos_info[:count] if videos_info else []
 
 # Evento cuando el bot está listo
 @bot.event
