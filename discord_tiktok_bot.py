@@ -49,6 +49,15 @@ async def remove_theme(ctx, theme: str):
     else:
         await ctx.send(f'El tema "{theme}" no se encuentra en la lista.')
 
+# Comando para ver todos los temas asignados
+@bot.command(name='ver_temas')
+async def view_themes(ctx):
+    global themes
+    if themes:
+        await ctx.send(f'Temas asignados: {", ".join(themes)}')
+    else:
+        await ctx.send("No hay temas asignados actualmente.")
+
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=1)
 async def send_random_video():
