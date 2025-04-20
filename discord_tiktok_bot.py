@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 from TikTokApi import TikTokApi
 import random
 import asyncio
@@ -7,7 +8,7 @@ import os
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde el archivo .env
-dotenv_path = ".env"  # Cambia esto si el archivo .env está en otra ubicación
+dotenv_path = ".env"
 if not os.path.exists(dotenv_path):
     raise FileNotFoundError(f"No se encontró el archivo .env en la ruta: {dotenv_path}")
 
@@ -15,14 +16,14 @@ load_dotenv(dotenv_path=dotenv_path)
 
 # Configurar los intents necesarios
 intents = discord.Intents.default()
-intents.message_content = True  # Necesario para leer el contenido de los mensajes
+intents.message_content = True
 
 # Configuración del bot de Discord
 bot = commands.Bot(command_prefix='_', intents=intents)
 
 # Configuración de la API de TikTok
 try:
-    api = TikTokApi.get_instance(use_test_endpoints=True)  # Usa endpoints de prueba si es necesario
+    api = TikTokApi.get_instance(use_test_endpoints=True)
 except Exception as e:
     print(f"Error al inicializar TikTokApi: {e}")
     api = None
@@ -34,55 +35,55 @@ themes = []
 @bot.command(name='asignar_tema')
 async def assign_theme(ctx, *args):
     global themes
-    themes = list(set(args))  # Eliminar duplicados
-    await ctx.send(f'Temas asignados: {", ".join(themes)}')
+    new_themes = list(set(args))
+    themes = list(set(themes + new_themes))
+    await ctx.send(f'Temas actuales: {", ".join(themes)}')
+
+# Comando para eliminar un tema (hashtag)
+@bot.command(name='eliminar_tema')
+async def remove_theme(ctx, theme: str):
+    global themes
+    if theme in themes:
+        themes.remove(theme)
+        await ctx.send(f'Tema eliminado: {theme}')
+    else:
+        await ctx.send(f'El tema "{theme}" no se encuentra en la lista.')
 
 # Tarea periódica para enviar videos aleatorios
-@tasks.loop(hours=1)  # Cambia el intervalo si lo deseas (ej. minutes=30)
+@tasks.loop(hours=1)
 async def send_random_video():
     if not themes:
         print("No hay temas asignados. La tarea no se ejecutará.")
-        return  # No hay temas asignados
+        return
 
-    # Seleccionar un tema aleatorio
     theme = random.choice(themes)
     print(f"Seleccionado tema: {theme}")
 
     try:
-        # Validar conexión con TikTokApi
         if not api:
             print("Error: TikTokApi no está configurada correctamente.")
             return
 
-        # Obtener videos de TikTok por hashtag
-        try:
-            videos = api.by_hashtag(theme.lstrip('#'), count=10)
-        except Exception as e:
-            print(f"Error al obtener videos de TikTok: {e}")
-            return
-
+        videos = api.by_hashtag(theme.lstrip('#'), count=10)
         if not videos:
             print(f"No se encontraron videos para el tema: {theme}")
-            return  # No se encontraron videos
+            return
 
-        # Seleccionar un video aleatorio
         video = random.choice(videos)
         video_url = f"https://www.tiktok.com/@{video['author']['uniqueId']}/video/{video['id']}"
         print(f"Video seleccionado: {video_url}")
 
-        # Enviar el enlace al canal
-        channel = bot.get_channel(1363398384890941611)  # ID del canal especificado
+        channel = bot.get_channel(1363398384890941611)
         if channel is None:
             print("Error: No se pudo encontrar el canal. Verifica el ID del canal.")
             return
 
-        # Verificar permisos del bot en el canal
         permissions = channel.permissions_for(channel.guild.me)
         if not permissions.send_messages:
             print("Error: El bot no tiene permisos para enviar mensajes en este canal.")
             return
         if not permissions.embed_links:
-            print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos. El mensaje puede no mostrarse correctamente.")
+            print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
 
         await channel.send(f"Aquí tienes un video de {theme}: {video_url}")
 
@@ -93,11 +94,44 @@ async def send_random_video():
     except Exception as e:
         print(f"Error al obtener o enviar videos: {e}")
 
+# Comando de aplicación (slash command) para enviar un video aleatorio
+@bot.tree.command(name="enviar_video", description="Envía un video aleatorio de TikTok basado en los temas asignados")
+async def enviar_video(interaction: discord.Interaction):
+    if not themes:
+        await interaction.response.send_message("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.", ephemeral=True)
+        return
+
+    theme = random.choice(themes)
+    try:
+        if not api:
+            await interaction.response.send_message("Error: TikTokApi no está configurada correctamente.", ephemeral=True)
+            return
+
+        videos = api.by_hashtag(theme.lstrip('#'), count=10)
+        if not videos:
+            await interaction.response.send_message(f"No se encontraron videos para el tema: {theme}", ephemeral=True)
+            return
+
+        video = random.choice(videos)
+        video_url = f"https://www.tiktok.com/@{video['author']['uniqueId']}/video/{video['id']}"
+
+        await interaction.response.send_message(f"Aquí tienes un video de {theme}: {video_url}")
+    except discord.Forbidden:
+        await interaction.response.send_message("Error: El bot no tiene permisos para enviar mensajes en este canal.", ephemeral=True)
+    except KeyError as e:
+        await interaction.response.send_message(f"Error al procesar datos del video: {str(e)}", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Error al obtener el video: {str(e)}", ephemeral=True)
+
 # Evento cuando el bot está listo
 @bot.event
 async def on_ready():
     print(f'Bot conectado como {bot.user}')
     try:
+        # Sincronizar los comandos de aplicación
+        await bot.tree.sync()
+        print("Comandos de aplicación sincronizados.")
+
         # Validar que el bot tiene acceso al canal
         channel = bot.get_channel(1363398384890941611)
         if channel is None:
@@ -105,14 +139,13 @@ async def on_ready():
         else:
             print(f"El bot tiene acceso al canal: {channel.name}")
 
-            # Verificar permisos del bot en el canal
             permissions = channel.permissions_for(channel.guild.me)
             if not permissions.send_messages:
                 print("Error: El bot no tiene permisos para enviar mensajes en este canal.")
             if not permissions.embed_links:
                 print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
 
-        send_random_video.start()  # Iniciar la tarea periódica
+        send_random_video.start()
     except Exception as e:
         print(f"Error al iniciar la tarea periódica: {e}")
 
@@ -122,8 +155,7 @@ token = os.getenv('BOT_TOKEN')
 if not token:
     raise ValueError("El token del bot no se ha encontrado. Asegúrate de que el archivo .env contiene 'BOT_TOKEN'.")
 
-# Validar el formato del token
-if len(token) < 50:  # Los tokens suelen ser largos; ajusta este valor si es necesario
+if len(token) < 50:
     raise ValueError("El token parece inválido. Verifica que sea correcto.")
 
 bot.run(token)
