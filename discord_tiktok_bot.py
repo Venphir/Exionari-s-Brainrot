@@ -4,9 +4,8 @@ from TikTokApi import TikTokApi
 import random
 import os
 from dotenv import load_dotenv
-import json  # Importar módulo para manejar JSON
-import threading  # Importar para manejar el acceso seguro a variables globales
-import time
+import json
+import asyncio  # Usaremos asyncio.Lock en lugar de threading.Lock
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
@@ -27,7 +26,6 @@ try:
     # Inicializar TikTokApi y crear sesión correctamente según la documentación más reciente
     api = TikTokApi()
     # La creación de sesión ahora es asíncrona y debe llamarse así:
-    import asyncio
     loop = asyncio.get_event_loop()
     loop.run_until_complete(api.create_sessions())
     print("TikTokApi inicializada correctamente.")
@@ -49,32 +47,8 @@ try:
 except ValueError:
     raise ValueError("El ID del canal proporcionado en el archivo .env no es un número válido.")
 
-# Lock para manejar el acceso seguro a la variable global themes
-themes_lock = threading.Lock()
-
-# Diccionario para almacenar los últimos mensajes enviados y prevenir duplicados
-last_messages = {}
-
-# Registro de mensajes procesados para evitar duplicados
-processed_message_ids = set()
-
-# Función auxiliar para evitar mensajes duplicados
-async def send_message_once(ctx, content):
-    # Si ya procesamos este mensaje del usuario, no hacemos nada
-    if ctx.message.id in processed_message_ids:
-        print(f"Mensaje ya procesado, ID: {ctx.message.id}")
-        return None
-    
-    # Marcar el mensaje como procesado
-    processed_message_ids.add(ctx.message.id)
-    
-    # Limitar el tamaño del conjunto para evitar uso excesivo de memoria
-    if len(processed_message_ids) > 1000:
-        # Eliminar los elementos más antiguos (la mitad)
-        processed_message_ids.clear()
-    
-    # Enviar el mensaje
-    return await ctx.send(content)
+# Una estrategia más simple para evitar comandos duplicados
+message_timestamps = {}
 
 # Función para cargar los temas desde el archivo
 def load_themes():
@@ -93,16 +67,13 @@ def load_themes():
     else:
         themes = []
 
-# Función para guardar los temas en el archivo
+# Función para guardar los temas en el archivo de manera no bloqueante
 def save_themes():
-    try:
-        with themes_lock:  # Asegurar acceso seguro a la variable global
-            themes_copy = themes[:]  # Crear una copia de la lista para evitar conflictos
-        with open(themes_file, "w", encoding="utf-8") as f:
-            json.dump(themes_copy, f, ensure_ascii=False, indent=4)
-            print("Temas guardados correctamente.")
-    except Exception as e:
-        print(f"Error al guardar los temas en el archivo: {e}")
+    # Crea una copia local de themes para evitar problemas de concurrencia
+    themes_copy = themes.copy()
+    with open(themes_file, "w", encoding="utf-8") as f:
+        json.dump(themes_copy, f, ensure_ascii=False, indent=4)
+    print("Temas guardados correctamente.")
 
 # Lista para almacenar los temas asignados
 themes = []
@@ -114,72 +85,78 @@ load_themes()
 @bot.command(name='asignar_tema')
 async def assign_theme(ctx, *args):
     global themes
-    # Verificar si este mensaje ya fue procesado
-    if ctx.message.id in processed_message_ids:
+    
+    # Evitar procesamiento duplicado
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
+    message_timestamps[ctx.message.id] = now
     
     new_themes = list(set(filter(None, args)))  # Filtrar temas vacíos
     if not new_themes:
-        await send_message_once(ctx, "Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.")
+        await ctx.send("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.")
         return
 
-    with themes_lock:
-        already_added = [theme for theme in new_themes if theme in themes]
-        new_to_add = [theme for theme in new_themes if theme not in themes]
+    already_added = [theme for theme in new_themes if theme in themes]
+    new_to_add = [theme for theme in new_themes if theme not in themes]
 
-        # Solo un mensaje de respuesta, según el caso
-        if already_added and not new_to_add:
-            await send_message_once(ctx, f"Los siguientes temas ya están agregados: {', '.join(already_added)}.\nTemas actuales: {', '.join(themes)}")
-        elif new_to_add and not already_added:
-            themes.extend(new_to_add)
-            save_themes()
-            await send_message_once(ctx, f"Nuevos temas agregados: {', '.join(new_to_add)}.\nTemas actuales: {', '.join(themes)}")
-        elif new_to_add and already_added:
-            themes.extend(new_to_add)
-            save_themes()
-            await send_message_once(ctx, 
-                f"Los siguientes temas ya estaban agregados: {', '.join(already_added)}.\n"
-                f"Nuevos temas agregados: {', '.join(new_to_add)}.\n"
-                f"Temas actuales: {', '.join(themes)}"
-            )
+    # Solo un mensaje de respuesta, según el caso
+    if already_added and not new_to_add:
+        await ctx.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}.\nTemas actuales: {', '.join(themes)}")
+    elif new_to_add and not already_added:
+        themes.extend(new_to_add)
+        save_themes()
+        await ctx.send(f"Nuevos temas agregados: {', '.join(new_to_add)}.\nTemas actuales: {', '.join(themes)}")
+    elif new_to_add and already_added:
+        themes.extend(new_to_add)
+        save_themes()
+        await ctx.send(
+            f"Los siguientes temas ya estaban agregados: {', '.join(already_added)}.\n"
+            f"Nuevos temas agregados: {', '.join(new_to_add)}.\n"
+            f"Temas actuales: {', '.join(themes)}"
+        )
 
 # Comando para eliminar un tema (hashtag)
 @bot.command(name='eliminar_tema')
 async def remove_theme(ctx, theme: str):
-    # Verificar si este mensaje ya fue procesado
-    if ctx.message.id in processed_message_ids:
-        return
-        
     global themes
-    with themes_lock:
-        if theme in themes:
-            themes.remove(theme)
-            save_themes()
-            await send_message_once(ctx, f'Tema eliminado: {theme}')
-        else:
-            await send_message_once(ctx, f'El tema "{theme}" no se encuentra en la lista.')
+    
+    # Evitar procesamiento duplicado
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    if theme in themes:
+        themes.remove(theme)
+        save_themes()
+        await ctx.send(f'Tema eliminado: {theme}')
+    else:
+        await ctx.send(f'El tema "{theme}" no se encuentra en la lista.')
 
 # Comando para ver todos los temas asignados
 @bot.command(name='ver_temas')
 async def view_themes(ctx):
-    # Verificar si este mensaje ya fue procesado
-    if ctx.message.id in processed_message_ids:
+    # Evitar procesamiento duplicado
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
-        
-    global themes
-    with themes_lock:
-        if themes:
-            await send_message_once(ctx, f'Temas asignados: {", ".join(themes)}')
-        else:
-            await send_message_once(ctx, "No hay temas asignados actualmente.")
+    message_timestamps[ctx.message.id] = now
+    
+    if themes:
+        await ctx.send(f'Temas asignados: {", ".join(themes)}')
+    else:
+        await ctx.send("No hay temas asignados actualmente.")
 
 # Comando de ayuda
 @bot.command(name='ayuda')
 async def help_command(ctx):
-    # Verificar si este mensaje ya fue procesado
-    if ctx.message.id in processed_message_ids:
+    # Evitar procesamiento duplicado
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
-        
+    message_timestamps[ctx.message.id] = now
+    
     help_message = """
 **Lista de comandos disponibles:**
 
@@ -207,7 +184,16 @@ async def help_command(ctx):
 - Los temas asignados se guardan de manera persistente y no se pierden al reiniciar el bot.
 - Asegúrate de que el bot tenga permisos para enviar mensajes y enlaces en el canal correspondiente.
 """
-    await send_message_once(ctx, help_message)
+    await ctx.send(help_message)
+
+# Limpieza periódica de timestamps antiguos
+@tasks.loop(minutes=5)
+async def clean_timestamps():
+    now = time.time()
+    # Eliminar entradas más viejas que 10 minutos
+    for msg_id in list(message_timestamps.keys()):
+        if now - message_timestamps[msg_id] > 600:  # 10 minutos
+            del message_timestamps[msg_id]
 
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=1)
@@ -217,12 +203,11 @@ async def send_random_video():
         print("Error: TikTokApi no está configurada correctamente. La tarea no se ejecutará.")
         return
 
-    with themes_lock:  # Asegurar acceso seguro a la variable global
-        if not themes:
-            print("No hay temas asignados. La tarea no se ejecutará.")
-            return
+    if not themes:
+        print("No hay temas asignados. La tarea no se ejecutará.")
+        return
 
-        theme = random.choice(themes)
+    theme = random.choice(themes)
 
     print(f"Seleccionado tema: {theme}")
 
@@ -322,6 +307,7 @@ async def on_ready():
                 print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
 
         send_random_video.start()
+        clean_timestamps.start()
     except Exception as e:
         print(f"Error al iniciar la tarea periódica: {e}")
 
