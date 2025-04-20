@@ -6,11 +6,13 @@ import os
 from dotenv import load_dotenv
 import json
 import asyncio
-import time  # Faltaba importar el módulo time
+import time
 import tempfile
 import yt_dlp  # Nueva biblioteca para descargar videos
 import subprocess  # Para llamar a ffmpeg para compresión
 import math  # Para cálculos de calidad de compresión
+import io
+import pickle
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
@@ -18,6 +20,24 @@ if not os.path.exists(dotenv_path):
     raise FileNotFoundError(f"No se encontró el archivo .env en la ruta: {dotenv_path}")
 
 load_dotenv(dotenv_path=dotenv_path)
+
+# Directorio para almacenamiento de caché de videos
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "video_cache")
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+
+# Registro de videos por tema - ayuda a rastrear qué videos están asociados con cada tema
+THEME_VIDEO_REGISTRY = os.path.join(CACHE_DIR, "theme_videos.pkl")
+
+# Cargar registro de temas-videos o crear uno nuevo
+theme_video_registry = {}
+try:
+    if os.path.exists(THEME_VIDEO_REGISTRY):
+        with open(THEME_VIDEO_REGISTRY, "rb") as f:
+            theme_video_registry = pickle.load(f)
+except Exception as e:
+    print(f"Error al cargar el registro de videos: {e}")
+    theme_video_registry = {}
 
 # Configurar los intents necesarios
 intents = discord.Intents.default()
@@ -40,21 +60,17 @@ except Exception as e:
 
 # Ruta del archivo para almacenar los temas
 themes_file = "themes.json"
-
 # Configuración del canal desde el archivo .env
 channel_id = os.getenv("DISCORD_CHANNEL_ID")  # Usar el nombre correcto de la variable de entorno
 if not channel_id:
     raise ValueError("El ID del canal no se ha encontrado. Asegúrate de que el archivo .env contiene 'DISCORD_CHANNEL_ID'.")
-
 # Validar y convertir el ID del canal a entero
 try:
     channel_id = int(channel_id)
 except ValueError:
     raise ValueError("El ID del canal proporcionado en el archivo .env no es un número válido.")
-
 # Una estrategia más simple para evitar comandos duplicados
 message_timestamps = {}
-
 # Función para cargar los temas desde el archivo
 def load_themes():
     global themes
@@ -71,7 +87,6 @@ def load_themes():
             themes = []
     else:
         themes = []
-
 # Función para guardar los temas en el archivo de manera no bloqueante
 def save_themes():
     # Crea una copia local de themes para evitar problemas de concurrencia
@@ -79,32 +94,25 @@ def save_themes():
     with open(themes_file, "w", encoding="utf-8") as f:
         json.dump(themes_copy, f, ensure_ascii=False, indent=4)
     print("Temas guardados correctamente.")
-
 # Lista para almacenar los temas asignados
 themes = []
-
 # Cargar los temas al iniciar el bot
 load_themes()
-
 # Comando para asignar temas (hashtags)
 @bot.command(name='asignar_tema')
 async def assign_theme(ctx, *args):
     global themes
-    
     # Evitar procesamiento duplicado
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
     message_timestamps[ctx.message.id] = now
-    
     new_themes = list(set(filter(None, args)))  # Filtrar temas vacíos
     if not new_themes:
         await ctx.send("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.")
         return
-
     already_added = [theme for theme in new_themes if theme in themes]
     new_to_add = [theme for theme in new_themes if theme not in themes]
-
     # Solo un mensaje de respuesta, según el caso
     if already_added and not new_to_add:
         await ctx.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}.\nTemas actuales: {', '.join(themes)}")
@@ -120,25 +128,21 @@ async def assign_theme(ctx, *args):
             f"Nuevos temas agregados: {', '.join(new_to_add)}.\n"
             f"Temas actuales: {', '.join(themes)}"
         )
-
 # Comando para eliminar un tema (hashtag)
 @bot.command(name='eliminar_tema')
 async def remove_theme(ctx, theme: str):
     global themes
-    
     # Evitar procesamiento duplicado
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
     message_timestamps[ctx.message.id] = now
-    
     if theme in themes:
         themes.remove(theme)
         save_themes()
         await ctx.send(f'Tema eliminado: {theme}')
     else:
         await ctx.send(f'El tema "{theme}" no se encuentra en la lista.')
-
 # Comando para ver todos los temas asignados
 @bot.command(name='ver_temas')
 async def view_themes(ctx):
@@ -147,32 +151,25 @@ async def view_themes(ctx):
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
     message_timestamps[ctx.message.id] = now
-    
     if themes:
         await ctx.send(f'Temas asignados: {", ".join(themes)}')
     else:
         await ctx.send("No hay temas asignados actualmente.")
-
+    
 # --- COMANDOS DE APLICACIÓN (SLASH COMMANDS) ---
-
 @bot.tree.command(name="asignar_tema", description="Asigna uno o más temas/hashtags para buscar videos de TikTok")
 async def slash_assign_theme(interaction: discord.Interaction, temas: str):
     global themes
-    
     # Dividir los temas ingresados (separados por espacios)
     args = temas.split()
     new_themes = list(set(filter(None, args)))  # Filtrar temas vacíos
-    
     if not new_themes:
         await interaction.response.send_message("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.", ephemeral=True)
         return
-
     # Responder inmediatamente
     await interaction.response.defer(ephemeral=False)
-    
     already_added = [theme for theme in new_themes if theme in themes]
     new_to_add = [theme for theme in new_themes if theme not in themes]
-
     # Solo un mensaje de respuesta, según el caso
     if already_added and not new_to_add:
         await interaction.followup.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}.\nTemas actuales: {', '.join(themes)}")
@@ -188,27 +185,22 @@ async def slash_assign_theme(interaction: discord.Interaction, temas: str):
             f"Nuevos temas agregados: {', '.join(new_to_add)}.\n"
             f"Temas actuales: {', '.join(themes)}"
         )
-
 @bot.tree.command(name="eliminar_tema", description="Elimina un tema/hashtag de la lista")
 async def slash_remove_theme(interaction: discord.Interaction, tema: str):
     global themes
-    
     if tema in themes:
         themes.remove(tema)
         save_themes()
         await interaction.response.send_message(f'✅ Tema eliminado: {tema}')
     else:
         await interaction.response.send_message(f'❌ El tema "{tema}" no se encuentra en la lista.')
-
 @bot.tree.command(name="ver_temas", description="Muestra todos los temas/hashtags actualmente asignados")
 async def slash_view_themes(interaction: discord.Interaction):
     global themes
-    
     if themes:
         await interaction.response.send_message(f'📋 Temas asignados: {", ".join(themes)}')
     else:
         await interaction.response.send_message("📋 No hay temas asignados actualmente.")
-
 @bot.tree.command(name="ayuda", description="Muestra la lista de comandos disponibles")
 async def slash_help_command(interaction: discord.Interaction):
     # Crear un embed con colores y formato profesional
@@ -217,7 +209,6 @@ async def slash_help_command(interaction: discord.Interaction):
         description="Aquí encontrarás todos los comandos disponibles para interactuar con el bot.",
         color=0xFF0050  # Rosa TikTok
     )
-    
     # Agregar thumbnail (icono pequeño en la esquina)
     embed.set_thumbnail(url="https://i.imgur.com/OGwYwj9.png")  # Logo de TikTok
     
@@ -228,11 +219,9 @@ async def slash_help_command(interaction: discord.Interaction):
             "**`/asignar_tema`** o **`_asignar_tema`**\n"
             "➡️ Asigna uno o más temas (hashtags) para buscar videos.\n"
             "➡️ Ejemplo: `/asignar_tema temas:#meme #funny` o `_asignar_tema #meme #funny`\n\n"
-            
             "**`/eliminar_tema`** o **`_eliminar_tema`**\n"
             "➡️ Elimina un tema de la lista.\n"
             "➡️ Ejemplo: `/eliminar_tema tema:#meme` o `_eliminar_tema #meme`\n\n"
-            
             "**`/ver_temas`** o **`_ver_temas`**\n"
             "➡️ Muestra los temas actualmente asignados."
         ),
@@ -249,7 +238,7 @@ async def slash_help_command(interaction: discord.Interaction):
         ),
         inline=False
     )
-    
+            
     # Comandos de ayuda
     embed.add_field(
         name="❓ Ayuda",
@@ -273,19 +262,14 @@ async def slash_help_command(interaction: discord.Interaction):
     
     # Pie de página
     embed.set_footer(text=f"Bot TikTok • Solicitado por {interaction.user.name}", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
-    
     # Agregar timestamp
     embed.timestamp = discord.utils.utcnow()
-    
     await interaction.response.send_message(embed=embed)
-
 # --- COMANDOS CON PREFIJO ---
-
 # Comando con prefijo para enviar un video (complemento al comando slash existente)
 @bot.command(name='enviar_video')
 async def prefix_send_video(ctx):
     global themes
-    
     # Evitar procesamiento duplicado
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
@@ -295,37 +279,29 @@ async def prefix_send_video(ctx):
     if not themes:
         await ctx.send("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.")
         return
-
     if not api:
         await ctx.send("Error: TikTokApi no está configurada correctamente.")
         return
 
     # Informar al usuario
     loading_msg = await ctx.send("🔍 Buscando un video aleatorio... Por favor espera.")
-    
     try:
         # Seleccionar un tema aleatorio
         theme = random.choice(themes)
         print(f"[_enviar_video] Tema seleccionado: {theme}")
-        
         # USAR EL NUEVO MÉTODO DE BÚSQUEDA
         videos = await get_tiktok_videos_by_hashtag(theme, count=5)
-        
         if not videos:
             await ctx.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
             return
-            
         # Seleccionar un video aleatorio 
         video_info = random.choice(videos)
         video_url = video_info['url']
         print(f"[_enviar_video] Video seleccionado: {video_url}")
-        
         # Actualizar el mensaje
         await loading_msg.edit(content=f"⬇️ Descargando video de **{theme}**... Por favor espera.")
-        
         # Descargar el video con compresión si es necesario
         video_file = await download_tiktok_video(video_url)
-        
         if video_file:
             # Enviar el video como archivo
             await ctx.send(
@@ -341,12 +317,11 @@ async def prefix_send_video(ctx):
             os.remove(video_file)
         else:
             await ctx.send(f"⚠️ No se pudo descargar el video (probablemente demasiado grande). Aquí está el enlace: {video_url}")
-            
     except Exception as e:
         error_msg = str(e)
         await ctx.send(f"❌ Error al obtener el video: {error_msg}")
         print(f"Error en _enviar_video: {error_msg}")
-
+        
 # Actualizar el comando de ayuda con prefijo para mostrar ambas opciones
 @bot.command(name='ayuda')
 async def prefix_help_command(ctx):
@@ -355,17 +330,14 @@ async def prefix_help_command(ctx):
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
     message_timestamps[ctx.message.id] = now
-    
     # Crear un embed con colores y formato profesional
     embed = discord.Embed(
         title="📱 Ayuda del Bot Brainrot",
         description="Aquí encontrarás todos los comandos disponibles para interactuar con el bot.",
         color=0xFF0050  # Rosa TikTok
     )
-    
     # Agregar thumbnail (icono pequeño en la esquina)
     embed.set_thumbnail(url="https://i.imgur.com/OGwYwj9.png")  # Logo de TikTok
-    
     # Comandos para gestión de temas
     embed.add_field(
         name="🏷️ Gestión de Temas",
@@ -373,11 +345,9 @@ async def prefix_help_command(ctx):
             "**`/asignar_tema`** o **`_asignar_tema`**\n"
             "➡️ Asigna uno o más temas (hashtags) para buscar videos.\n"
             "➡️ Ejemplo: `/asignar_tema temas:#meme #funny` o `_asignar_tema #meme #funny`\n\n"
-            
             "**`/eliminar_tema`** o **`_eliminar_tema`**\n"
             "➡️ Elimina un tema de la lista.\n"
             "➡️ Ejemplo: `/eliminar_tema tema:#meme` o `_eliminar_tema #meme`\n\n"
-            
             "**`/ver_temas`** o **`_ver_temas`**\n"
             "➡️ Muestra los temas actualmente asignados."
         ),
@@ -394,7 +364,7 @@ async def prefix_help_command(ctx):
         ),
         inline=False
     )
-    
+            
     # Comandos de ayuda
     embed.add_field(
         name="❓ Ayuda",
@@ -418,12 +388,9 @@ async def prefix_help_command(ctx):
     
     # Pie de página
     embed.set_footer(text=f"Bot TikTok • Solicitado por {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    
     # Agregar timestamp
     embed.timestamp = discord.utils.utcnow()
-    
     await ctx.send(embed=embed)
-
 # Limpieza periódica de timestamps antiguos
 @tasks.loop(minutes=5)
 async def clean_timestamps():
@@ -432,7 +399,6 @@ async def clean_timestamps():
     for msg_id in list(message_timestamps.keys()):
         if now - message_timestamps[msg_id] > 600:  # 10 minutos
             del message_timestamps[msg_id]
-
 # Lista actualizada de videos populares de TikTok que funcionan
 FALLBACK_VIDEOS = [
     "https://www.tiktok.com/@domelipa/video/7336743194239773952",
@@ -446,25 +412,29 @@ FALLBACK_VIDEOS = [
     "https://www.tiktok.com/@therock/video/7336824451247317254",
     "https://www.tiktok.com/@jasonstatham/video/7336021733002168583"
 ]
-
 # Función mejorada para buscar videos por hashtag con múltiples fuentes alternativas
-async def get_tiktok_videos_by_hashtag(hashtag, count=5):
+async def get_tiktok_videos_by_hashtag(hashtag, count=5, use_cache=True):
     """Obtiene videos de TikTok relacionados con el hashtag usando múltiples métodos."""
     print(f"Buscando videos para hashtag: {hashtag}")
     hashtag_clean = hashtag.lstrip('#').lower()
     videos_info = []
     
+    # Verificar si tenemos videos en caché
+    if use_cache and hashtag_clean in theme_video_registry:
+        cached_videos = theme_video_registry[hashtag_clean]
+        print(f"Usando videos en caché para {hashtag_clean}, {len(cached_videos)} disponibles")
+        random.shuffle(cached_videos)
+        return cached_videos[:count]  # Devolver los mismos
+    
     # MÉTODO 1: Búsqueda directa por tema en sitios alternativos
     try:
         import requests
-        
         # Conjunto de URLs alternativas para búsqueda (más probabilidades de éxito)
         urls_to_try = [
             f"https://tiktokder.com/api/short/search?keyword={hashtag_clean}&count=10",
             f"https://www.tiktok.com/api/search/general/full/?keyword={hashtag_clean}&is_filter_word=0&from_page=search",
             f"https://www.tikwm.com/api/feed/search?keywords={hashtag_clean}"
         ]
-        
         # Headers que simulan navegador real
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -483,7 +453,6 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5):
                 response = requests.get(api_url, headers=headers, timeout=10)
                 if response.status_code == 200:
                     data = response.json()
-                    
                     # Extraer videos según la estructura de cada API
                     if "data" in data:
                         # Formato API de TikTok
@@ -522,22 +491,18 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5):
                                     'title': video.get('title', 'Video de TikTok'),
                                     'uploader': video['author'].get('unique_id', 'TikTok user')
                                 })
-                
                 # Si encontramos suficientes videos, salimos
                 if len(videos_info) >= count:
                     break
-                    
             except Exception as e:
                 print(f"Error con API {api_url}: {e}")
                 continue
     except Exception as e:
         print(f"Error en búsqueda directa: {e}")
-    
     # MÉTODO 2: Búsqueda temática
     # Si no se encontraron videos, buscar por temas relacionados
     if not videos_info:
         print(f"Intentando búsqueda por categorías temáticas para: {hashtag}")
-        
         # Expandir las categorías temáticas para aumentar posibilidades de coincidencia
         theme_videos = {
             'meme': [
@@ -586,9 +551,8 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5):
                 "https://www.tiktok.com/@heyitspriguel/video/7312740065715192069",
                 "https://www.tiktok.com/@andimaybin/video/7323701669915627819",
                 "https://www.tiktok.com/@damnnonah/video/7303262765279231274"
-            ]
+            ],
         }
-        
         # Verificar coincidencia exacta primero
         if hashtag_clean in theme_videos:
             for i, url in enumerate(theme_videos[hashtag_clean]):
@@ -611,11 +575,9 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5):
                             'title': f'Video de {theme_key} relacionado con {hashtag}',
                             'uploader': 'Creador de TikTok'
                         })
-                    
                     if videos_info:
                         print(f"Usando {len(videos_info)} videos temáticos relacionados con {theme_key}")
                         break
-    
     # MÉTODO 3: Último recurso - videos genéricos populares
     if not videos_info:
         print(f"No se encontraron videos específicos para el tema: {hashtag}")
@@ -625,7 +587,6 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5):
         import random
         random.shuffle(FALLBACK_VIDEOS)
         fallback_videos = FALLBACK_VIDEOS[:count]
-        
         for i, url in enumerate(fallback_videos):
             videos_info.append({
                 'id': f'general_{i}',
@@ -633,10 +594,14 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5):
                 'title': f'Video popular (tema solicitado: {hashtag})',
                 'uploader': 'Creador popular de TikTok'
             })
-    
     print(f"Total de videos encontrados: {len(videos_info)}")
+    # Guardar en caché para futuras búsquedas
+    if use_cache:
+        theme_video_registry[hashtag_clean] = videos_info
+        with open(THEME_VIDEO_REGISTRY, "wb") as f:
+            pickle.dump(theme_video_registry, f)
+        print(f"Videos para '{hashtag_clean}' agregados a caché: {len(videos_info)}")
     return videos_info
-
 # Función actualizada para descargar videos con múltiples métodos de respaldo
 async def download_tiktok_video(url, max_size_mb=8):
     """Descarga videos de TikTok usando múltiples métodos para evadir bloqueos."""
@@ -644,7 +609,6 @@ async def download_tiktok_video(url, max_size_mb=8):
     temp_id = int(time.time())
     original_file = os.path.join(temp_dir, f"tiktok_original_{temp_id}.mp4")
     compressed_file = os.path.join(temp_dir, f"tiktok_compressed_{temp_id}.mp4")
-    
     try:
         print(f"Intentando descargar video: {url}")
         
@@ -660,7 +624,6 @@ async def download_tiktok_video(url, max_size_mb=8):
         except Exception as e:
             print(f"Error al extraer ID del video: {e}")
             video_id = "unknown"
-        
         # Lista de servicios de descarga para intentar
         download_methods = [
             "snaptik", "tikmate", "tikwm", "tiktokder", "yt_dlp"
@@ -681,7 +644,6 @@ async def download_tiktok_video(url, max_size_mb=8):
                         "Origin": "https://snaptik.app",
                         "Referer": "https://snaptik.app/"
                     }
-                    
                     # Primera solicitud para obtener token
                     response = requests.get("https://snaptik.app/", headers=snaptik_headers)
                     # Extraer token manualmente ya que no estamos usando BeautifulSoup
@@ -689,7 +651,6 @@ async def download_tiktok_video(url, max_size_mb=8):
                     token_start = html_content.find('name="token" value="') + 19
                     token_end = html_content.find('"', token_start)
                     token = html_content[token_start:token_end]
-                    
                     if token:
                         print(f"Token SnapTik obtenido: {token[:10]}...")
                         
@@ -698,13 +659,11 @@ async def download_tiktok_video(url, max_size_mb=8):
                             "url": url,
                             "token": token
                         }
-                        
                         download_response = requests.post(
                             "https://snaptik.app/action.php", 
                             headers={**snaptik_headers, "Content-Type": "application/x-www-form-urlencoded"}, 
                             data=form_data
                         )
-                        
                         if "https:" in download_response.text and ".mp4" in download_response.text:
                             # Extraer URL de descarga del HTML
                             response_html = download_response.text
@@ -714,14 +673,12 @@ async def download_tiktok_video(url, max_size_mb=8):
                             
                             if download_url and download_url.startswith("https") and ".mp4" in download_url:
                                 print(f"URL de descarga SnapTik encontrada")
-                                
                                 # Descargar el video
                                 video_response = requests.get(download_url, headers=snaptik_headers, stream=True)
                                 with open(original_file, 'wb') as f:
                                     for chunk in video_response.iter_content(chunk_size=1024*1024):
                                         if chunk:
                                             f.write(chunk)
-                                            
                                 print("Descarga completada con SnapTik")
                                 break  # Salir del bucle si la descarga fue exitosa
                             else:
@@ -730,12 +687,10 @@ async def download_tiktok_video(url, max_size_mb=8):
                             raise Exception("No se encontró enlace de descarga en la respuesta")
                     else:
                         raise Exception("No se pudo obtener el token")
-                
                 elif method == "tikmate":
                     # Método 2: TikMate
                     import requests
                     api_url = f"https://api.tikmate.app/api/lookup?url={url}"
-                    
                     headers = {
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "*/*",
@@ -743,32 +698,27 @@ async def download_tiktok_video(url, max_size_mb=8):
                         "Referer": "https://tikmate.app/",
                         "Origin": "https://tikmate.app"
                     }
-                    
                     response = requests.post(api_url, headers=headers)
                     if response.status_code == 200 and response.json().get('success'):
                         token = response.json().get('token')
                         if token:
                             download_url = f"https://api.tikmate.app/api/download/{token}/{video_id}"
-                            
                             # Descargar el video
                             video_response = requests.get(download_url, headers=headers, stream=True)
                             with open(original_file, 'wb') as f:
                                 for chunk in video_response.iter_content(chunk_size=1024*1024):
                                     if chunk:
                                         f.write(chunk)
-                            
                             print("Descarga completada con TikMate")
                             break  # Salir del bucle si la descarga fue exitosa
                         else:
                             raise Exception("Token no obtenido")
                     else:
                         raise Exception("API no disponible")
-                
                 elif method == "tikwm":
                     # Método 3: TikWM
                     import requests
                     api_url = "https://www.tikwm.com/api/"
-                    
                     headers = {
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "application/json",
@@ -776,35 +726,29 @@ async def download_tiktok_video(url, max_size_mb=8):
                         "Origin": "https://www.tikwm.com",
                         "Referer": "https://www.tikwm.com/"
                     }
-                    
                     data = {
                         "url": url,
                         "hd": "1"
                     }
-                    
                     response = requests.post(api_url, headers=headers, data=data)
                     if response.status_code == 200 and response.json().get('success'):
                         data = response.json().get('data', {})
                         if 'play' in data:
                             download_url = data['play']
-                            
                             # Descargar el video
                             video_response = requests.get(download_url, headers=headers, stream=True)
                             with open(original_file, 'wb') as f:
                                 for chunk in video_response.iter_content(chunk_size=1024*1024):
                                     if chunk:
                                         f.write(chunk)
-                            
                             print("Descarga completada con TikWM")
                             break  # Salir del bucle si la descarga fue exitosa
-                    else:
-                        raise Exception("API no disponible o video no encontrado")
-                
+                        else:
+                            raise Exception("API no disponible o video no encontrado")
                 elif method == "tiktokder":
                     # Método 4: TikTokDer
                     import requests
                     api_url = "https://tiktokder.com/api/short/get"
-                    
                     headers = {
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "application/json",
@@ -812,9 +756,7 @@ async def download_tiktok_video(url, max_size_mb=8):
                         "Origin": "https://tiktokder.com",
                         "Referer": "https://tiktokder.com/"
                     }
-                    
                     data = {"url": url}
-                    
                     response = requests.post(api_url, headers=headers, json=data)
                     if response.status_code == 200 and response.json().get('status'):
                         download_url = response.json().get('data', {}).get('video_url')
@@ -825,12 +767,10 @@ async def download_tiktok_video(url, max_size_mb=8):
                                 for chunk in video_response.iter_content(chunk_size=1024*1024):
                                     if chunk:
                                         f.write(chunk)
-                            
                             print("Descarga completada con TikTokDer")
                             break  # Salir del bucle si la descarga fue exitosa
                     else:
                         raise Exception("API no disponible o video no encontrado")
-                
                 elif method == "yt_dlp":
                     # Método 5: yt-dlp con configuración mejorada para evadir bloqueo IP
                     # Generar user agent aleatorio
@@ -841,7 +781,6 @@ async def download_tiktok_video(url, max_size_mb=8):
                         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
                     ]
                     user_agent = random.choice(user_agents)
-                    
                     # Añadir opciones específicas para evadir bloqueos
                     ydl_opts = {
                         'format': 'best[ext=mp4]/best',
@@ -862,7 +801,6 @@ async def download_tiktok_video(url, max_size_mb=8):
                         'no_warnings': True,
                         'extractor_args': {'tiktok': {'embed_api': ['1'], 'api_hostname': ['api22-normal-c-useast1a.tiktokv.com']}}
                     }
-                    
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info_dict = ydl.extract_info(url, download=True)
                         if info_dict and os.path.exists(original_file):
@@ -870,35 +808,28 @@ async def download_tiktok_video(url, max_size_mb=8):
                             break  # Salir del bucle si la descarga fue exitosa
                         else:
                             raise Exception("Video no descargado correctamente")
-                
             except Exception as e:
                 print(f"Error con método {method}: {e}")
                 # Continuar al siguiente método si este falla
-        
         # Verificar si se descargó el archivo
         if not os.path.exists(original_file) or os.path.getsize(original_file) == 0:
             print(f"Ninguno de los métodos de descarga funcionó para: {url}")
             return None
-            
         # Continuar con la compresión si es necesario
         original_size_mb = os.path.getsize(original_file) / (1024 * 1024)
         print(f"Video descargado. Tamaño: {original_size_mb:.2f} MB")
-        
         # Si el archivo es menor al límite, usarlo directamente
         if original_size_mb <= max_size_mb:
             print(f"El video está dentro del límite de tamaño, enviándolo sin comprimir")
             return original_file
-            
         # Si es más grande, comprimir con ffmpeg
         print(f"Comprimiendo video (tamaño original: {original_size_mb:.2f} MB)...")
-        
         # Calcula el factor de calidad basado en tamaño original
         crf = min(51, max(18, 23 + int(math.log(original_size_mb / max_size_mb) * 5)))
-        
         # Comprimir con ffmpeg
         try:
             ffmpeg_cmd = [
-                'ffmpeg', '-i', original_file, 
+                'ffmpeg', '-i', original_file,
                 '-c:v', 'libx264', '-crf', str(crf),
                 '-preset', 'veryfast', 
                 '-c:a', 'aac', '-b:a', '128k',
@@ -907,14 +838,12 @@ async def download_tiktok_video(url, max_size_mb=8):
             print(f"Ejecutando comando: {' '.join(ffmpeg_cmd)}")
             process = subprocess.run(
                 ffmpeg_cmd,
-                stdout=subprocess.PIPE, 
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
-            
             if process.returncode != 0:
                 print(f"Error en ffmpeg: {process.stderr.decode()}")
                 return original_file
-                
             compressed_size_mb = os.path.getsize(compressed_file) / (1024 * 1024)
             print(f"Video comprimido. Nuevo tamaño: {compressed_size_mb:.2f} MB")
             
@@ -923,7 +852,6 @@ async def download_tiktok_video(url, max_size_mb=8):
                 os.remove(compressed_file)
                 os.remove(original_file)
                 return None
-                
             os.remove(original_file)
             return compressed_file
         except Exception as e:
@@ -933,14 +861,12 @@ async def download_tiktok_video(url, max_size_mb=8):
             else:
                 os.remove(original_file)
                 return None
-                
     except Exception as e:
         print(f"Error general en descarga/procesamiento: {e}")
         for f in [original_file, compressed_file]:
             if os.path.exists(f):
                 os.remove(f)
         return None
-
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=1)
 async def send_random_video():
@@ -952,33 +878,26 @@ async def send_random_video():
         if not themes:
             print("No hay temas asignados. La tarea no se ejecutará.")
             return
-        
         theme = random.choice(themes)
         print(f"Seleccionado tema: {theme}")
-        
         videos = await get_tiktok_videos_by_hashtag(theme, count=5)
-        
         if not videos:
             print(f"No se encontraron videos para el tema: {theme}")
             return
-        
         video_info = random.choice(videos)
         video_url = video_info['url']
         print(f"Video seleccionado: {video_url}")
-        
         channel = bot.get_channel(channel_id)
-        if channel is None:
+        if (channel is None):
             print("Error: No se pudo encontrar el canal. Verifica el ID del canal.")
             return
-        
         permissions = channel.permissions_for(channel.guild.me)
         if not permissions.send_messages:
             print("Error: El bot no tiene permisos para enviar mensajes en este canal.")
         if not permissions.embed_links:
             print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
-        
+                
         video_file = await download_tiktok_video(video_url)
-        
         if video_file:
             await channel.send(
                 content=f"Aquí tienes un video de {theme}: {video_url}",
@@ -989,7 +908,6 @@ async def send_random_video():
             await channel.send(f"Aquí tienes un video de {theme}: {video_url}")
     except Exception as e:
         print(f"Error al obtener o enviar videos: {e}")
-
 # Comando de aplicación (slash command) para enviar un video aleatorio
 @bot.tree.command(name="enviar_video", description="Envía un video aleatorio de TikTok basado en los temas asignados")
 async def enviar_video(interaction: discord.Interaction):
@@ -998,39 +916,30 @@ async def enviar_video(interaction: discord.Interaction):
     if not themes:
         await interaction.response.send_message("No hay temas asignados. Usa `_asignar_tema` para añadir algunos.", ephemeral=True)
         return
-    
     # IMPORTANTE: Responder inmediatamente para evitar el error "La aplicación no respondió".
     await interaction.response.defer(thinking=True)
-    
     try:
         # Seleccionar un tema aleatorio
         theme = random.choice(themes)
         print(f"[/enviar_video] Tema seleccionado: {theme}")
-        
         # Informar al usuario
         searching_msg = await interaction.followup.send(f"🔍 Buscando videos de **{theme}**... Por favor espera.")
-        
         # MÉTODO ALTERNATIVO: Usar yt-dlp directamente para obtener videos
         videos = await get_tiktok_videos_by_hashtag(theme, count=5)
-        
         if not videos:
             await interaction.followup.send(f"⚠️ No se encontraron videos para el tema: **{theme}**")
             return
-        
-        # Seleccionar un video aleatorio
+        # Seleccionar un video aleatorio 
         video_info = random.choice(videos)
         video_url = video_info['url']
         print(f"[/enviar_video] Video seleccionado: {video_url}")
-        
         # Informar que se está descargando:
         try:
             await searching_msg.edit(content=f"⬇️ Descargando video de **{theme}**... Por favor espera.")
         except:
             pass  # Ignorar errores de edición
-        
         # Descargar el video con timeout ampliado
         video_file = await download_tiktok_video(video_url)
-        
         if video_file:
             print(f"[/enviar_video] Enviando video desde archivo: {video_file}")
             try:
@@ -1058,7 +967,6 @@ async def enviar_video(interaction: discord.Interaction):
         print(f"Error crítico en /enviar_video: {error_msg}")
         import traceback
         traceback.print_exc()  # Imprimir traza completa para diagnóstico
-        
         try:
             await interaction.followup.send(f"❌ Error al obtener el video: {error_msg}")
         except:
@@ -1069,37 +977,30 @@ async def enviar_video(interaction: discord.Interaction):
                     await channel.send(f"❌ Error al procesar el comando de {interaction.user.mention}: {error_msg}")
                 except:
                     pass
-
+    
 # Agregar un comando alternativo que permita enviar un video directo de TikTok
 @bot.tree.command(name="video_directo", description="Envía un video específico de TikTok dado su URL")
 async def video_directo(interaction: discord.Interaction, url: str):
     """Comando para enviar un video específico de TikTok usando su URL."""
-    
     # Verificar que la URL sea de TikTok
     if not ('tiktok.com' in url):
         await interaction.response.send_message("❌ Por favor proporciona una URL válida de TikTok.", ephemeral=True)
         return
-    
     # Responder inmediatamente para evitar timeout
     await interaction.response.defer(thinking=True)
-    
     try:
         # Informar al usuario
         searching_msg = await interaction.followup.send(f"⬇️ Descargando video... Por favor espera.")
-        
         # Intentar descargar el video
         video_file = await download_tiktok_video(url)
-        
         if video_file:
             # Enviar el video como archivo
             await interaction.followup.send(
                 content=f"🎬 ¡Listo! Aquí tienes tu video: {url}",
                 file=discord.File(video_file)
             )
-            
             # Eliminar el archivo temporal
             os.remove(video_file)
-            
             # Eliminar el mensaje de búsqueda
             try:
                 await searching_msg.delete()
@@ -1112,40 +1013,32 @@ async def video_directo(interaction: discord.Interaction, url: str):
         error_msg = str(e)
         print(f"Error al descargar el video directo: {error_msg}")
         await interaction.followup.send(f"❌ Error: {error_msg}")
-
 # También añadir la versión con prefijo
 @bot.command(name='video_directo')
 async def prefix_video_directo(ctx, url: str):
     """Comando con prefijo para enviar un video específico de TikTok."""
-    
     # Evitar procesamiento duplicado
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
     message_timestamps[ctx.message.id] = now
-    
     # Verificar que la URL sea de TikTok
     if not ('tiktok.com' in url):
         await ctx.send("❌ Por favor proporciona una URL válida de TikTok.")
         return
-    
     # Informar al usuario
     loading_msg = await ctx.send("⬇️ Descargando video... Por favor espera.")
-    
     try:
         # Intentar descargar el video
         video_file = await download_tiktok_video(url)
-        
         if video_file:
             # Enviar el video como archivo
             await ctx.send(
                 content=f"🎬 ¡Listo! Aquí tienes tu video: {url}",
                 file=discord.File(video_file)
             )
-            
             # Eliminar el archivo temporal
             os.remove(video_file)
-            
             # Eliminar el mensaje de carga
             try:
                 await loading_msg.delete()
@@ -1153,11 +1046,40 @@ async def prefix_video_directo(ctx, url: str):
                 pass
         else:
             await ctx.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {url}")
-            
     except Exception as e:
         error_msg = str(e)
         await ctx.send(f"❌ Error: {error_msg}")
         print(f"Error en _video_directo: {error_msg}")
+
+# Nuevo comando para precargar videos de temas y guardarlos localmente
+@bot.command(name='precargar_videos')
+@commands.is_owner()  # Solo el dueño del bot puede usar este comando
+async def preload_videos(ctx, theme=None, num_videos=3):
+    """Comando para precargar videos de un tema específico o de todos los temas."""
+    if not theme and not themes:
+        await ctx.send("No hay temas para precargar videos.")
+        return
+        
+    themes_to_process = [theme] if theme else themes
+    await ctx.send(f"🔄 Iniciando precarga de videos para {len(themes_to_process)} temas. Esto puede tardar varios minutos...")
+    
+    total_videos = 0
+    for current_theme in themes_to_process:
+        try:
+            # Buscar sin usar caché para obtener nuevos videos
+            videos = await get_tiktok_videos_by_hashtag(current_theme, count=num_videos, use_cache=False)
+            
+            if not videos:
+                await ctx.send(f"⚠️ No se encontraron videos para: {current_theme}")
+                continue
+                
+            await ctx.send(f"✅ Encontrados {len(videos)} videos para {current_theme}")
+            total_videos += len(videos)
+            
+        except Exception as e:
+            await ctx.send(f"❌ Error al precargar videos para {current_theme}: {e}")
+    
+    await ctx.send(f"✅ Precarga completada: {total_videos} videos en total para {len(themes_to_process)} temas")
 
 # Evento cuando el bot está listo
 @bot.event
