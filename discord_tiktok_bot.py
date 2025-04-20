@@ -45,31 +45,46 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 # Configuración del bot de Discord
-bot = commands.Bot(command_prefix='_', intents=intents)
+bot = commands.Bot(command_prefix='_', intents=intents, help_command=None)  # Desactivar comando de ayuda predeterminado
 
 # Configuración de la API de TikTok
+# Como estamos usando el método embedez, realmente no necesitamos la API de TikTok
+# Por lo que podemos dejarla como None y modificar el código para que no dependa de ella
+api = None
 try:
-    # Inicializar TikTokApi y crear sesión correctamente según la documentación más reciente
-    api = TikTokApi()
-    # La creación de sesión ahora es asíncrona y debe llamarse así:
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(api.create_sessions())
-    print("TikTokApi inicializada correctamente.")
+    # Solo inicializar la API si se requiere funcionalidad adicional
+    if os.getenv("USE_TIKTOK_API", "false").lower() == "true":
+        print("Inicializando TikTokApi (esto puede tardar)...")
+        api = TikTokApi()
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(api.create_sessions())
+        print("TikTokApi inicializada correctamente.")
+    else:
+        print("Modo embedez: TikTokApi no será inicializada")
 except Exception as e:
     print(f"Error al inicializar TikTokApi: {e}")
+    print("El bot continuará usando el modo embedez sin la API de TikTok")
     api = None
 
 # Ruta del archivo para almacenar los temas
 themes_file = "themes.json"
+
 # Configuración del canal desde el archivo .env
-channel_id = os.getenv("DISCORD_CHANNEL_ID")  # Usar el nombre correcto de la variable de entorno
-if not channel_id:
-    raise ValueError("El ID del canal no se ha encontrado. Asegúrate de que el archivo .env contiene 'DISCORD_CHANNEL_ID'.")
-# Validar y convertir el ID del canal a entero
+# Intentar obtener el ID con manejo mejorado de errores
 try:
-    channel_id = int(channel_id)
+    channel_id_str = os.getenv("DISCORD_CHANNEL_ID")
+    if not channel_id_str:
+        print("⚠️ ADVERTENCIA: ID del canal no encontrado en .env")
+        print("Los comandos automáticos no funcionarán hasta que configures DISCORD_CHANNEL_ID")
+        channel_id = None
+    else:
+        channel_id = int(channel_id_str)
+        print(f"Canal configurado: {channel_id}")
 except ValueError:
-    raise ValueError("El ID del canal proporcionado en el archivo .env no es un número válido.")
+    print(f"⚠️ ERROR: El ID del canal '{channel_id_str}' no es un número válido")
+    print("Por favor corrige el valor en el archivo .env")
+    channel_id = None
+
 # Una estrategia más simple para evitar comandos duplicados
 message_timestamps = {}
 # Función para cargar los temas desde el archivo
@@ -438,7 +453,7 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5, use_cache=True):
     videos_info = []
     
     # NUEVO: Verificar primero el sistema de caché
-    if use_cache and hashtag_clean in theme_video_registry:
+    if use_cache and hashtag_clean in theme_video_registry:  # Corregido: && por and
         cached_videos = theme_video_registry.get(hashtag_clean, []) # Usar .get para evitar KeyError
         if cached_videos:
             print(f"Usando videos en caché para {hashtag_clean}, {len(cached_videos)} disponibles")
