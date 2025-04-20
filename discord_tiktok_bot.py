@@ -6,6 +6,7 @@ import random
 import asyncio
 import os
 from dotenv import load_dotenv
+import json  # Importar módulo para manejar JSON
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
@@ -28,8 +29,37 @@ except Exception as e:
     print(f"Error al inicializar TikTokApi: {e}")
     api = None
 
+# Ruta del archivo para almacenar los temas
+themes_file = "themes.json"
+
+# Función para cargar los temas desde el archivo
+def load_themes():
+    global themes
+    if os.path.exists(themes_file):
+        try:
+            with open(themes_file, "r", encoding="utf-8") as f:
+                themes = json.load(f)
+                print(f"Temas cargados: {themes}")
+        except Exception as e:
+            print(f"Error al cargar los temas desde el archivo: {e}")
+            themes = []
+    else:
+        themes = []
+
+# Función para guardar los temas en el archivo
+def save_themes():
+    try:
+        with open(themes_file, "w", encoding="utf-8") as f:
+            json.dump(themes, f, ensure_ascii=False, indent=4)
+            print("Temas guardados correctamente.")
+    except Exception as e:
+        print(f"Error al guardar los temas en el archivo: {e}")
+
 # Lista para almacenar los temas asignados
 themes = []
+
+# Cargar los temas al iniciar el bot
+load_themes()
 
 # Comando para asignar temas (hashtags)
 @bot.command(name='asignar_tema')
@@ -47,6 +77,7 @@ async def assign_theme(ctx, *args):
         await ctx.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}")
     if new_to_add:
         themes.extend(new_to_add)
+        save_themes()  # Guardar los temas actualizados
         await ctx.send(f"Nuevos temas agregados: {', '.join(new_to_add)}")
     await ctx.send(f'Temas actuales: {", ".join(themes)}')
 
@@ -56,6 +87,7 @@ async def remove_theme(ctx, theme: str):
     global themes
     if theme in themes:
         themes.remove(theme)
+        save_themes()  # Guardar los temas actualizados
         await ctx.send(f'Tema eliminado: {theme}')
     else:
         await ctx.send(f'El tema "{theme}" no se encuentra en la lista.')
