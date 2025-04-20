@@ -24,6 +24,7 @@ bot = commands.Bot(command_prefix='_', intents=intents)
 # Configuración de la API de TikTok
 try:
     api = TikTokApi()
+    api.create_session()  # Crear una sesión antes de usar la API
 except Exception as e:
     print(f"Error al inicializar TikTokApi: {e}")
     api = None
