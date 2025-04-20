@@ -175,14 +175,15 @@ async def send_random_video():
     print(f"Seleccionado tema: {theme}")
 
     try:
-        # Reemplaza 'by_hashtag' con el método correcto según la documentación actual de TikTokApi
-        videos = api.some_new_method(theme.lstrip('#'), count=10)  # Cambia 'some_new_method' al método correcto
+        # Usar el método 'hashtag' para obtener videos relacionados con el hashtag
+        hashtag_data = api.hashtag(name=theme.lstrip('#'))
+        videos = hashtag_data.videos(count=10)  # Obtener hasta 10 videos
         if not videos:
             print(f"No se encontraron videos para el tema: {theme}")
             return
 
         video = random.choice(videos)
-        video_url = f"https://www.tiktok.com/@{video['author']['uniqueId']}/video/{video['id']}"
+        video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
         print(f"Video seleccionado: {video_url}")
 
         channel = bot.get_channel(channel_id)
