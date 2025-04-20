@@ -16,7 +16,6 @@ import requests as http_requests
 
 # Verificación de dependencias requeridas
 try:
-    # Intentar importar PIL para verificar si está instalado
     from PIL import Image
 except ImportError:
     print("=== ERROR: Pillow no está instalado ===")
@@ -25,8 +24,7 @@ except ImportError:
     print("pip install Pillow>=8.1.1")
     print("=========================================")
     sys.exit(1)
-    
-# Ahora que sabemos que PIL está instalado, importar instagrapi
+
 try:
     import instagrapi
     import instagrapi.exceptions
@@ -98,7 +96,7 @@ if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
 # Directorio para almacenar la sesión de Instagram
 SESSION_FILE = os.path.join(CACHE_DIR, "instagram_session.json")
 
-# Inicializar el cliente de Instagram - MOVER LA CONEXIÓN PARA NO BLOQUEAR EL INICIO DEL BOT
+# Inicializar el cliente de Instagram
 ig_client = Client()
 instagram_connected = False
 
@@ -107,16 +105,25 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("El token del bot de Discord no se encontró en el archivo .env. Asegúrate de incluir 'BOT_TOKEN'.")
 
+# Función para transformar el enlace de Instagram a instagramez.com
+def transform_to_embedez_url(instagram_url):
+    """Transforma un enlace de Instagram a un enlace de instagramez.com."""
+    if "instagram.com/reel/" not in instagram_url:
+        return instagram_url  # Si no es un enlace de Reel, devolver el original
+    # Extraer el código del Reel (por ejemplo, ABC123)
+    reel_code = instagram_url.split("reel/")[1].rstrip("/")
+    # Construir el nuevo enlace
+    embedez_url = f"https://www.instagramez.com/reel/{reel_code}/"
+    return embedez_url
+
 # Evento cuando el bot está listo
 @bot.event
 async def on_ready():
     print(f'Bot conectado como {bot.user}')
     try:
-        # Sincronizar los comandos de aplicación
         await bot.tree.sync()
         print("Comandos de aplicación sincronizados.")
         
-        # Validar que el bot tiene acceso al canal
         global channel_id
         if channel_id:
             channel = bot.get_channel(channel_id)
@@ -130,22 +137,19 @@ async def on_ready():
                 if not permissions.embed_links:
                     print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
         
-        # Iniciar tareas programadas
         send_random_video.start()
         clean_timestamps.start()
         
-        # Conectar a Instagram en segundo plano
         bot.loop.create_task(connect_to_instagram())
         
     except Exception as e:
         print(f"Error al inicializar el bot: {e}")
         traceback.print_exc()
 
-# Conectar a Instagram de manera asíncrona para no bloquear el bot
+# Conectar a Instagram de manera asíncrona
 async def connect_to_instagram():
     global ig_client, instagram_connected
     try:
-        # Realizar la conexión en una tarea separada para no bloquear el bot
         print("Conectando a Instagram en segundo plano...")
         await bot.loop.run_in_executor(None, login_with_session)
         instagram_connected = True
@@ -157,7 +161,6 @@ async def connect_to_instagram():
 
 # Función para cargar o iniciar una nueva sesión
 def login_with_session():
-    # Verificar si existe una sesión guardada
     if os.path.exists(SESSION_FILE):
         try:
             ig_client.load_settings(SESSION_FILE)
@@ -167,7 +170,6 @@ def login_with_session():
         except Exception as e:
             print(f"Error al cargar la sesión: {e}. Iniciando una nueva sesión...")
 
-    # Si no hay sesión o falla la carga, iniciar sesión normalmente
     try:
         ig_client.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
         print("Conexión a Instagram exitosa.")
@@ -185,7 +187,6 @@ def login_with_session():
         print(f"Error al iniciar sesión en Instagram: {e}")
         raise
 
-    # Guardar la sesión después de un inicio exitoso
     try:
         ig_client.dump_settings(SESSION_FILE)
         print("Sesión guardada exitosamente.")
@@ -249,8 +250,7 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True):
     hashtag_clean = hashtag.lstrip('#').lower()
     videos_info = []
 
-    # 1. Intentar usar el caché, pero validar los enlaces
-    if use_cache & hashtag_clean in theme_video_registry:
+    if use_cache and hashtag_clean in theme_video_registry:
         cached_videos = theme_video_registry.get(hashtag_clean, [])
         valid_videos = []
         for video in cached_videos:
@@ -262,7 +262,6 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True):
             print(f"Usando videos en caché para {hashtag_clean}, {len(valid_videos)} disponibles")
             random.shuffle(valid_videos)
             videos_info = valid_videos[:count]
-            # Actualizar el caché con solo los enlaces válidos
             theme_video_registry[hashtag_clean] = valid_videos
             try:
                 with open(THEME_VIDEO_REGISTRY, "wb") as f:
@@ -271,20 +270,17 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True):
             except Exception as e:
                 print(f"Error al actualizar caché: {e}")
 
-    # 2. Si no hay suficientes videos válidos en caché, buscar nuevos usando instagrapi
     if len(videos_info) < count:
         try:
-            # Buscar hashtag en Instagram
             hashtag_data = ig_client.hashtag_info(hashtag_clean)
             if not hashtag_data:
                 print(f"No se encontró el hashtag: {hashtag_clean}")
                 return videos_info
 
-            # Obtener publicaciones recientes del hashtag
             medias = ig_client.hashtag_medias_recent(hashtag_clean, amount=count * 2)
             temp_videos = []
             for media in medias:
-                if (media.media_type == 2):  # 2 indica un video (Reel)
+                if media.media_type == 2:
                     video_url = f"https://www.instagram.com/reel/{media.code}/"
                     temp_videos.append({
                         'id': media.pk,
@@ -293,7 +289,6 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True):
                         'uploader': media.user.username
                     })
 
-            # 3. Validar los enlaces encontrados antes de añadirlos
             for video in temp_videos:
                 if len(videos_info) >= count:
                     break
@@ -303,7 +298,6 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True):
                 else:
                     print(f"Enlace no válido descartado: {video['url']}")
 
-            # 4. Actualizar el caché con los enlaces válidos
             if videos_info and use_cache:
                 existing_videos = theme_video_registry.get(hashtag_clean, [])
                 all_videos = videos_info + [v for v in existing_videos if v not in videos_info]
@@ -468,7 +462,7 @@ async def slash_help_command(interaction: discord.Interaction):
         value=(
             "• Puedes usar comandos con barra diagonal (`/`) o con prefijo (`_`).\n"
             "• Los temas asignados se guardan automáticamente.\n"
-            "• El bot usa enlaces directos para mostrar Reels en Discord."
+            "• Los Reels se reproducen directamente en Discord usando un enlace embed."
         ),
         inline=False
     )
@@ -495,11 +489,9 @@ async def prefix_send_video(ctx):
     
     loading_msg = await ctx.send("🔍 Buscando un Reel aleatorio... Por favor espera.")
     try:
-        # Seleccionar un tema aleatorio
         theme = random.choice(themes)
         print(f"[_enviar_video] Tema seleccionado: {theme}")
         
-        # Buscar reels para el tema
         await loading_msg.edit(content=f"🔍 Buscando Reels para **{theme}**... Por favor espera.")
         videos = await get_instagram_reels_by_hashtag(theme, count=5)
         
@@ -511,15 +503,16 @@ async def prefix_send_video(ctx):
                 pass
             return
             
-        # Seleccionar un video aleatorio
         video_info = random.choice(videos)
         video_url = video_info['url']
         
-        # Enviar el video
-        content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{video_url}"
+        # Transformar el enlace a instagramez.com
+        embedez_url = transform_to_embedez_url(video_url)
+        
+        # Enviar el video con el enlace transformado
+        content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{embedez_url}"
         await ctx.send(content=content_msg)
         
-        # Eliminar mensaje de carga
         try:
             await loading_msg.delete()
         except:
@@ -544,33 +537,29 @@ async def slash_send_video(interaction: discord.Interaction):
         await interaction.response.send_message("⌛ La conexión con Instagram aún está en proceso. Por favor espera unos segundos e intenta nuevamente.", ephemeral=True)
         return
     
-    # Responder inmediatamente para evitar timeout
     await interaction.response.defer(thinking=True)
     
     try:
-        # Seleccionar tema aleatorio
         theme = random.choice(themes)
         print(f"[/enviar_video] Tema seleccionado: {theme}")
         
-        # Informar al usuario
         searching_msg = await interaction.followup.send(f"🔍 Buscando Reels de **{theme}**... Por favor espera.")
-        
-        # Buscar videos
         videos = await get_instagram_reels_by_hashtag(theme, count=5)
         
         if not videos:
             await interaction.followup.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema.")
             return
             
-        # Seleccionar video aleatorio
         video_info = random.choice(videos)
         video_url = video_info['url']
         
-        # Enviar el video
-        content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{video_url}"
+        # Transformar el enlace a instagramez.com
+        embedez_url = transform_to_embedez_url(video_url)
+        
+        # Enviar el video con el enlace transformado
+        content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{embedez_url}"
         await interaction.followup.send(content=content_msg)
         
-        # Eliminar mensaje de búsqueda
         try:
             await searching_msg.delete()
         except:
@@ -592,7 +581,6 @@ async def video_directo(interaction: discord.Interaction, url: str):
     await interaction.response.defer(thinking=True)
     
     try:
-        # Verificar si el enlace es válido
         searching_msg = await interaction.followup.send("⬇️ Verificando enlace... Por favor espera.")
         
         is_valid = await is_valid_instagram_url(url)
@@ -604,10 +592,12 @@ async def video_directo(interaction: discord.Interaction, url: str):
                 pass
             return
             
-        # Si es válido, enviarlo
-        await interaction.followup.send(f"📱 Aquí tienes tu Reel de Instagram: {url}")
+        # Transformar el enlace a instagramez.com
+        embedez_url = transform_to_embedez_url(url)
         
-        # Eliminar mensaje de búsqueda
+        # Enviar el video con el enlace transformado
+        await interaction.followup.send(f"📱 Aquí tienes tu Reel de Instagram:\n{embedez_url}")
+        
         try:
             await searching_msg.delete()
         except:
@@ -630,11 +620,9 @@ async def prefix_video_directo(ctx, url: str):
         await ctx.send("❌ Por favor proporciona una URL válida de Instagram Reels.")
         return
         
-    # Informar al usuario
     loading_msg = await ctx.send("⬇️ Verificando enlace... Por favor espera.")
     
     try:
-        # Verificar si el enlace es válido
         is_valid = await is_valid_instagram_url(url)
         if not is_valid:
             await ctx.send("❌ El enlace proporcionado no es válido o el Reel no está disponible.")
@@ -644,10 +632,12 @@ async def prefix_video_directo(ctx, url: str):
                 pass
             return
                 
-        # Si es válido, enviarlo
-        await ctx.send(f"📱 Aquí tienes tu Reel de Instagram: {url}")
+        # Transformar el enlace a instagramez.com
+        embedez_url = transform_to_embedez_url(url)
         
-        # Eliminar mensaje de carga
+        # Enviar el video con el enlace transformado
+        await ctx.send(f"📱 Aquí tienes tu Reel de Instagram:\n{embedez_url}")
+        
         try:
             await loading_msg.delete()
         except:
@@ -659,7 +649,7 @@ async def prefix_video_directo(ctx, url: str):
         print(f"Error en _video_directo: {error_msg}")
 
 # Tarea periódica para enviar videos aleatorios
-@tasks.loop(hours=12)  # Cada 12 horas - ajusta según necesites
+@tasks.loop(hours=12)
 async def send_random_video():
     global themes, instagram_connected, channel_id
     
@@ -668,28 +658,27 @@ async def send_random_video():
         return
         
     try:
-        # Obtener el canal
         channel = bot.get_channel(channel_id)
         if not channel:
             print(f"No se pudo encontrar el canal con ID {channel_id}")
             return
             
-        # Seleccionar un tema aleatorio
         theme = random.choice(themes)
         print(f"[Tarea automática] Tema seleccionado: {theme}")
         
-        # Buscar Reels
         videos = await get_instagram_reels_by_hashtag(theme, count=5)
         if not videos:
             print(f"No se encontraron Reels para el tema: {theme}")
             return
             
-        # Seleccionar uno aleatoriamente
         video_info = random.choice(videos)
         video_url = video_info['url']
         
-        # Enviar al canal
-        await channel.send(f"📱 Reel automático de **{theme}**:\n{video_url}")
+        # Transformar el enlace a instagramez.com
+        embedez_url = transform_to_embedez_url(video_url)
+        
+        # Enviar el video con el enlace transformado
+        await channel.send(f"📱 Reel automático de **{theme}**:\n{embedez_url}")
         print(f"Reel enviado automáticamente para el tema: {theme}")
         
     except Exception as e:
@@ -701,10 +690,10 @@ async def send_random_video():
 async def clean_timestamps():
     now = time.time()
     for msg_id in list(message_timestamps.keys()):
-        if now - message_timestamps[msg_id] > 600:  # 10 minutos
+        if now - message_timestamps[msg_id] > 600:
             del message_timestamps[msg_id]
 
-# IMPORTANTE: Iniciar el bot al final del archivo
+# Iniciar el bot
 if __name__ == "__main__":
     try:
         print("Iniciando bot de Discord...")
