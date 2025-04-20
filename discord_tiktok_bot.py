@@ -104,6 +104,38 @@ async def view_themes(ctx):
     else:
         await ctx.send("No hay temas asignados actualmente.")
 
+# Comando de ayuda para mostrar información sobre los comandos del bot
+@bot.command(name='help')
+async def help_command(ctx):
+    help_message = """
+**Lista de comandos disponibles:**
+
+1. **_asignar_tema [temas...]**
+   - Descripción: Asigna uno o más temas (hashtags) para buscar videos de TikTok.
+   - Ejemplo: `_asignar_tema #meme #funny`
+
+2. **_eliminar_tema [tema]**
+   - Descripción: Elimina un tema (hashtag) de la lista de temas asignados.
+   - Ejemplo: `_eliminar_tema #meme`
+
+3. **_ver_temas**
+   - Descripción: Muestra todos los temas (hashtags) actualmente asignados.
+   - Ejemplo: `_ver_temas`
+
+4. **/enviar_video**
+   - Descripción: Envía un video aleatorio de TikTok basado en los temas asignados.
+   - Nota: Este es un comando de aplicación (slash command).
+
+5. **_help**
+   - Descripción: Muestra esta lista de ayuda con información sobre los comandos disponibles.
+   - Ejemplo: `_help`
+
+**Notas adicionales:**
+- Los temas asignados se guardan de manera persistente y no se pierden al reiniciar el bot.
+- Asegúrate de que el bot tenga permisos para enviar mensajes y enlaces en el canal correspondiente.
+"""
+    await ctx.send(help_message)
+
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=1)
 async def send_random_video():
