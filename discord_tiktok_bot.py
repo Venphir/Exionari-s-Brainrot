@@ -126,7 +126,7 @@ async def view_themes(ctx):
             await ctx.send("No hay temas asignados actualmente.")
 
 # Comando de ayuda para mostrar información sobre los comandos del bot
-@bot.command(name='help')
+@bot.command(name='ayuda')  # Cambiar el nombre del comando a 'ayuda'
 async def help_command(ctx):
     help_message = """
 **Lista de comandos disponibles:**
@@ -147,9 +147,9 @@ async def help_command(ctx):
    - Descripción: Envía un video aleatorio de TikTok basado en los temas asignados.
    - Nota: Este es un comando de aplicación (slash command).
 
-5. **_help**
+5. **_ayuda**
    - Descripción: Muestra esta lista de ayuda con información sobre los comandos disponibles.
-   - Ejemplo: `_help`
+   - Ejemplo: `_ayuda`
 
 **Notas adicionales:**
 - Los temas asignados se guardan de manera persistente y no se pierden al reiniciar el bot.
