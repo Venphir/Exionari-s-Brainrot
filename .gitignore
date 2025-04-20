@@ -1,2 +1,37 @@
-.env
+# Entorno virtual
+.venv/
 venv/
+ENV/
+
+# Archivos de configuración local
+.env
+
+# Archivos Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Archivos temporales
+*.mp4
+temp/
+tmp/
+
+# Logs
+*.log
