@@ -447,66 +447,98 @@ FALLBACK_VIDEOS = [
     "https://www.tiktok.com/@jasonstatham/video/7336021733002168583"
 ]
 
-# Función reemplazada que realmente busca videos por tema en lugar de usar videos fijos
+# Función mejorada para buscar videos por hashtag con múltiples fuentes alternativas
 async def get_tiktok_videos_by_hashtag(hashtag, count=5):
-    """Obtiene videos de TikTok realmente relacionados con el hashtag proporcionado."""
+    """Obtiene videos de TikTok relacionados con el hashtag usando múltiples métodos."""
     print(f"Buscando videos para hashtag: {hashtag}")
     hashtag_clean = hashtag.lstrip('#').lower()
-    
-    # URLs de búsqueda en formato JSON/API para evitar bloqueos directos
-    search_url = f"https://www.tiktok.com/api/search/general/full/?keyword={hashtag_clean}&is_filter_word=0&from_page=search"
-    
     videos_info = []
     
+    # MÉTODO 1: Búsqueda directa por tema en sitios alternativos
     try:
-        # Configuración para solicitud HTTP con apariencia de navegador
+        import requests
+        
+        # Conjunto de URLs alternativas para búsqueda (más probabilidades de éxito)
+        urls_to_try = [
+            f"https://tiktokder.com/api/short/search?keyword={hashtag_clean}&count=10",
+            f"https://www.tiktok.com/api/search/general/full/?keyword={hashtag_clean}&is_filter_word=0&from_page=search",
+            f"https://www.tikwm.com/api/feed/search?keywords={hashtag_clean}"
+        ]
+        
+        # Headers que simulan navegador real
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
             'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'Referer': f'https://www.tiktok.com/search?q={hashtag_clean}',
-            'Origin': 'https://www.tiktok.com',
-            'Sec-Fetch-Site': 'same-origin',
+            'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+            'Referer': 'https://www.google.com/',
+            'Origin': 'https://www.google.com',
+            'Sec-Fetch-Site': 'cross-site',
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Dest': 'empty',
-            'Cookie': 'ttwid=default_value; tt_webid_v2=default_value',
         }
         
-        # Utilizar requests directamente en lugar de yt-dlp para la búsqueda
-        import requests
-        response = requests.get(search_url, headers=headers)
-        data = response.json()
-        
-        # Extraer IDs de video de la respuesta JSON
-        video_items = []
-        if 'data' in data and isinstance(data['data'], list):
-            for item in data['data']:
-                if item.get('type') == 'video' and 'item' in item:
-                    video_items.append(item['item'])
-        
-        # Construir URLs de video a partir de los IDs
-        for item in video_items[:count]:
-            if 'id' in item and 'author' in item and 'nickname' in item['author']:
-                video_id = item['id']
-                username = item['author']['uniqueId'] or item['author']['nickname']
-                video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
+        # Intentar cada URL hasta obtener resultados
+        for api_url in urls_to_try:
+            try:
+                response = requests.get(api_url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Extraer videos según la estructura de cada API
+                    if "data" in data:
+                        # Formato API de TikTok
+                        if isinstance(data["data"], list):
+                            for item in data["data"][:count*2]:
+                                if item.get('type') == 'video' and 'item' in item:
+                                    item_data = item['item']
+                                    if 'id' in item_data and 'author' in item_data:
+                                        username = item_data['author'].get('uniqueId') or item_data['author'].get('nickname', 'tiktok_user')
+                                        video_url = f"https://www.tiktok.com/@{username}/video/{item_data['id']}"
+                                        videos_info.append({
+                                            'id': item_data['id'],
+                                            'url': video_url,
+                                            'title': item_data.get('desc', f'Video de {username}'),
+                                            'uploader': username
+                                        })
+                    elif "videos" in data:
+                        # Formato API de TikTokder
+                        for video in data["videos"][:count*2]:
+                            if 'video_id' in video:
+                                video_url = f"https://www.tiktok.com/@{video.get('author', 'user')}/video/{video['video_id']}"
+                                videos_info.append({
+                                    'id': video['video_id'],
+                                    'url': video_url,
+                                    'title': video.get('title', 'Video de TikTok'),
+                                    'uploader': video.get('author', 'TikTok user')
+                                })
+                    elif "items" in data:
+                        # Formato tikwm API
+                        for video in data["items"][:count*2]:
+                            if 'id' in video and 'author' in video:
+                                video_url = video.get('share_url') or f"https://www.tiktok.com/@{video['author']['unique_id']}/video/{video['id']}"
+                                videos_info.append({
+                                    'id': video['id'],
+                                    'url': video_url,
+                                    'title': video.get('title', 'Video de TikTok'),
+                                    'uploader': video['author'].get('unique_id', 'TikTok user')
+                                })
                 
-                videos_info.append({
-                    'id': video_id,
-                    'url': video_url,
-                    'title': item.get('desc', f'Video de {username}'),
-                    'uploader': username
-                })
-                print(f"Video encontrado relacionado con {hashtag}: {video_url}")
-                
+                # Si encontramos suficientes videos, salimos
                 if len(videos_info) >= count:
                     break
+                    
+            except Exception as e:
+                print(f"Error con API {api_url}: {e}")
+                continue
     except Exception as e:
-        print(f"Error al buscar videos con API: {e}")
+        print(f"Error en búsqueda directa: {e}")
     
-    # Si no encontramos videos, intentar con método alternativo usando temas populares relacionados
+    # MÉTODO 2: Búsqueda temática
+    # Si no se encontraron videos, buscar por temas relacionados
     if not videos_info:
-        # Mapear temas comunes a videos pre-seleccionados que realmente se relacionan con el tema
+        print(f"Intentando búsqueda por categorías temáticas para: {hashtag}")
+        
+        # Expandir las categorías temáticas para aumentar posibilidades de coincidencia
         theme_videos = {
             'meme': [
                 "https://www.tiktok.com/@memezar/video/7343252656745408778",
@@ -537,48 +569,77 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5):
                 "https://www.tiktok.com/@foodnetwork/video/7343264633030392107",
                 "https://www.tiktok.com/@tasty/video/7340327052303255851",
                 "https://www.tiktok.com/@gordonramsayofficial/video/7343606700867075371"
+            ],
+            # Añadir categorías específicas para hashtags populares difíciles de encontrar
+            'brainrot': [
+                "https://www.tiktok.com/@grantsucks/video/7265741626209035562",
+                "https://www.tiktok.com/@smashingjosh/video/7265087875093225798",
+                "https://www.tiktok.com/@l.c.m.p/video/7276708487877418282",
+                "https://www.tiktok.com/@wavy.duh/video/7298389348218715434"
+            ],
+            'viral': [
+                "https://www.tiktok.com/@khaby.lame/video/7312266556369998086",
+                "https://www.tiktok.com/@charlidamelio/video/7312739935253928235",
+                "https://www.tiktok.com/@addisonre/video/7317528414632331562"
+            ],
+            'trending': [
+                "https://www.tiktok.com/@heyitspriguel/video/7312740065715192069",
+                "https://www.tiktok.com/@andimaybin/video/7323701669915627819",
+                "https://www.tiktok.com/@damnnonah/video/7303262765279231274"
             ]
         }
         
-        # Palabras clave que pueden coincidir parcialmente con el tema
-        for theme_key, videos in theme_videos.items():
-            if theme_key in hashtag_clean or hashtag_clean in theme_key:
-                print(f"Encontrada coincidencia parcial con categoría: {theme_key}")
-                # Usar videos relacionados con esta categoría
-                for i, url in enumerate(videos):
-                    videos_info.append({
-                        'id': f'themed_{i}',
-                        'url': url,
-                        'title': f'Video de {theme_key} relacionado con {hashtag}',
-                        'uploader': 'Creator de TikTok'
-                    })
+        # Verificar coincidencia exacta primero
+        if hashtag_clean in theme_videos:
+            for i, url in enumerate(theme_videos[hashtag_clean]):
+                videos_info.append({
+                    'id': f'themed_{hashtag_clean}_{i}',
+                    'url': url,
+                    'title': f'Video de {hashtag}',
+                    'uploader': 'Creador de TikTok'
+                })
+            print(f"Encontrados {len(videos_info)} videos específicos para {hashtag}")
+        else:
+            # Buscar coincidencias parciales en cualquier parte del texto
+            for theme_key, videos in theme_videos.items():
+                if theme_key in hashtag_clean or hashtag_clean in theme_key:
+                    print(f"Encontrada coincidencia parcial con categoría: {theme_key}")
+                    for i, url in enumerate(videos):
+                        videos_info.append({
+                            'id': f'themed_{i}',
+                            'url': url,
+                            'title': f'Video de {theme_key} relacionado con {hashtag}',
+                            'uploader': 'Creador de TikTok'
+                        })
                     
-                if videos_info:
-                    print(f"Usando {len(videos_info)} videos temáticos relacionados con {theme_key}")
-                    break
+                    if videos_info:
+                        print(f"Usando {len(videos_info)} videos temáticos relacionados con {theme_key}")
+                        break
     
-    # Si todavía no encontramos videos relacionados, mostrar un mensaje claro
+    # MÉTODO 3: Último recurso - videos genéricos populares
     if not videos_info:
         print(f"No se encontraron videos específicos para el tema: {hashtag}")
         print("Usando videos generales populares (podrían no estar relacionados con el tema)")
         
-        # Usar videos generales populares como último recurso
+        # Obtener videos aleatorios del listado general
+        import random
+        random.shuffle(FALLBACK_VIDEOS)
         fallback_videos = FALLBACK_VIDEOS[:count]
+        
         for i, url in enumerate(fallback_videos):
             videos_info.append({
                 'id': f'general_{i}',
                 'url': url,
-                'title': 'Video popular de TikTok',
-                'uploader': 'Creator popular'
+                'title': f'Video popular (tema solicitado: {hashtag})',
+                'uploader': 'Creador popular de TikTok'
             })
     
     print(f"Total de videos encontrados: {len(videos_info)}")
     return videos_info
 
-# Función mejorada para descargar videos evitando el bloqueo IP
+# Función actualizada para descargar videos con múltiples métodos de respaldo
 async def download_tiktok_video(url, max_size_mb=8):
-    """Descarga videos de TikTok usando método alternativo para evitar bloqueos de IP."""
-    # Crear nombres de archivo temporales únicos
+    """Descarga videos de TikTok usando múltiples métodos para evadir bloqueos."""
     temp_dir = tempfile.gettempdir()
     temp_id = int(time.time())
     original_file = os.path.join(temp_dir, f"tiktok_original_{temp_id}.mp4")
@@ -587,98 +648,239 @@ async def download_tiktok_video(url, max_size_mb=8):
     try:
         print(f"Intentando descargar video: {url}")
         
-        # MÉTODO 1: Usar TikTok downloader directo (sin depender de BeautifulSoup)
+        # Extraer el ID del video para utilizar en los métodos de descarga
         try:
-            import requests
-            
-            # Intentar extraer el ID del video
-            try:
-                # Intentar varios patrones comunes de URLs de TikTok
-                if "/video/" in url:
-                    video_id = url.split("/video/")[1].split("?")[0]
-                elif "/v/" in url:
-                    video_id = url.split("/v/")[1].split("?")[0]
-                else:
-                    # Si no podemos identificar un patrón conocido, usar la URL completa
-                    video_id = url.split("/")[-1].split("?")[0]
-                    
-                print(f"ID del video extraído: {video_id}")
-            except Exception as e:
-                print(f"Error al extraer ID del video: {e}")
-                video_id = "unknown"
-                
-            # Usar un servicio directo de descarga sin necesidad de BS4
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "*/*",
-                "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-                "Referer": "https://www.tiktok.com/",
-                "Origin": "https://www.tiktok.com"
-            }
-            
-            # Intento directo usando URL API alternativa
-            api_url = f"https://api.tikmate.app/api/lookup?url={url}"
-            print(f"Intentando descargar con API alternativa...")
-            
-            response = requests.post(api_url, headers=headers)
-            if response.status_code == 200 and response.json().get('success'):
-                token = response.json().get('token')
-                if token:
-                    download_url = f"https://api.tikmate.app/api/download/{token}/{video_id}"
-                    print(f"URL de descarga directa obtenida")
-                    
-                    # Descargar el video
-                    video_response = requests.get(download_url, headers=headers, stream=True)
-                    
-                    with open(original_file, 'wb') as f:
-                        for chunk in video_response.iter_content(chunk_size=1024*1024):
-                            if chunk:
-                                f.write(chunk)
-                    
-                    print("Descarga directa completada correctamente")
-                else:
-                    raise Exception("No se pudo obtener un token válido")
+            if "/video/" in url:
+                video_id = url.split("/video/")[1].split("?")[0]
+            elif "/v/" in url:
+                video_id = url.split("/v/")[1].split("?")[0]
             else:
-                raise Exception("API de descarga no disponible")
-                
+                video_id = url.split("/")[-1].split("?")[0]
+            print(f"ID del video extraído: {video_id}")
         except Exception as e:
-            print(f"Error con el método de descarga directa: {e}")
-            print("Intentando método alternativo con yt-dlp...")
-            
-            # MÉTODO 2: Intentar con yt-dlp configurado para evadir bloqueos
-            ydl_opts = {
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': original_file,
-                'quiet': False,
-                'verbose': True,
-                'socket_timeout': 90,
-                'retries': 15,
-                'fragment_retries': 15,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
-                    'Accept': '*/*',
-                    'Referer': 'https://www.tiktok.com/',
-                    'Origin': 'https://www.tiktok.com'
-                },
-                'nocheckcertificate': True,
-                'no_warnings': False,
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(url, download=True)
-                if info_dict:
-                    print(f"Video extraído con éxito via yt-dlp: {info_dict.get('title', 'Unknown')}")
+            print(f"Error al extraer ID del video: {e}")
+            video_id = "unknown"
         
-        # Verificar si el archivo existe
-        if not os.path.exists(original_file):
-            print(f"Error: El archivo no se descargó correctamente: {original_file}")
+        # Lista de servicios de descarga para intentar
+        download_methods = [
+            "snaptik", "tikmate", "tikwm", "tiktokder", "yt_dlp"
+        ]
+        
+        # Intentar métodos de descarga en secuencia hasta que uno funcione
+        for method in download_methods:
+            try:
+                print(f"Intentando método: {method}")
+                
+                if method == "snaptik":
+                    # Método 1: SnapTik
+                    import requests
+                    snaptik_headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "*/*",
+                        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+                        "Origin": "https://snaptik.app",
+                        "Referer": "https://snaptik.app/"
+                    }
+                    
+                    # Primera solicitud para obtener token
+                    response = requests.get("https://snaptik.app/", headers=snaptik_headers)
+                    # Extraer token manualmente ya que no estamos usando BeautifulSoup
+                    html_content = response.text
+                    token_start = html_content.find('name="token" value="') + 19
+                    token_end = html_content.find('"', token_start)
+                    token = html_content[token_start:token_end]
+                    
+                    if token:
+                        print(f"Token SnapTik obtenido: {token[:10]}...")
+                        
+                        # Segunda solicitud para obtener enlaces de descarga
+                        form_data = {
+                            "url": url,
+                            "token": token
+                        }
+                        
+                        download_response = requests.post(
+                            "https://snaptik.app/action.php", 
+                            headers={**snaptik_headers, "Content-Type": "application/x-www-form-urlencoded"}, 
+                            data=form_data
+                        )
+                        
+                        if "https:" in download_response.text and ".mp4" in download_response.text:
+                            # Extraer URL de descarga del HTML
+                            response_html = download_response.text
+                            download_url_start = response_html.find('href="https:') + 6
+                            download_url_end = response_html.find('"', download_url_start)
+                            download_url = response_html[download_url_start:download_url_end].replace("&amp;", "&")
+                            
+                            if download_url and download_url.startswith("https") and ".mp4" in download_url:
+                                print(f"URL de descarga SnapTik encontrada")
+                                
+                                # Descargar el video
+                                video_response = requests.get(download_url, headers=snaptik_headers, stream=True)
+                                with open(original_file, 'wb') as f:
+                                    for chunk in video_response.iter_content(chunk_size=1024*1024):
+                                        if chunk:
+                                            f.write(chunk)
+                                            
+                                print("Descarga completada con SnapTik")
+                                break  # Salir del bucle si la descarga fue exitosa
+                            else:
+                                raise Exception("URL de descarga no válida")
+                        else:
+                            raise Exception("No se encontró enlace de descarga en la respuesta")
+                    else:
+                        raise Exception("No se pudo obtener el token")
+                
+                elif method == "tikmate":
+                    # Método 2: TikMate
+                    import requests
+                    api_url = f"https://api.tikmate.app/api/lookup?url={url}"
+                    
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "*/*",
+                        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+                        "Referer": "https://tikmate.app/",
+                        "Origin": "https://tikmate.app"
+                    }
+                    
+                    response = requests.post(api_url, headers=headers)
+                    if response.status_code == 200 and response.json().get('success'):
+                        token = response.json().get('token')
+                        if token:
+                            download_url = f"https://api.tikmate.app/api/download/{token}/{video_id}"
+                            
+                            # Descargar el video
+                            video_response = requests.get(download_url, headers=headers, stream=True)
+                            with open(original_file, 'wb') as f:
+                                for chunk in video_response.iter_content(chunk_size=1024*1024):
+                                    if chunk:
+                                        f.write(chunk)
+                            
+                            print("Descarga completada con TikMate")
+                            break  # Salir del bucle si la descarga fue exitosa
+                        else:
+                            raise Exception("Token no obtenido")
+                    else:
+                        raise Exception("API no disponible")
+                
+                elif method == "tikwm":
+                    # Método 3: TikWM
+                    import requests
+                    api_url = "https://www.tikwm.com/api/"
+                    
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                        "Origin": "https://www.tikwm.com",
+                        "Referer": "https://www.tikwm.com/"
+                    }
+                    
+                    data = {
+                        "url": url,
+                        "hd": "1"
+                    }
+                    
+                    response = requests.post(api_url, headers=headers, data=data)
+                    if response.status_code == 200 and response.json().get('success'):
+                        data = response.json().get('data', {})
+                        if 'play' in data:
+                            download_url = data['play']
+                            
+                            # Descargar el video
+                            video_response = requests.get(download_url, headers=headers, stream=True)
+                            with open(original_file, 'wb') as f:
+                                for chunk in video_response.iter_content(chunk_size=1024*1024):
+                                    if chunk:
+                                        f.write(chunk)
+                            
+                            print("Descarga completada con TikWM")
+                            break  # Salir del bucle si la descarga fue exitosa
+                    else:
+                        raise Exception("API no disponible o video no encontrado")
+                
+                elif method == "tiktokder":
+                    # Método 4: TikTokDer
+                    import requests
+                    api_url = "https://tiktokder.com/api/short/get"
+                    
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "Origin": "https://tiktokder.com",
+                        "Referer": "https://tiktokder.com/"
+                    }
+                    
+                    data = {"url": url}
+                    
+                    response = requests.post(api_url, headers=headers, json=data)
+                    if response.status_code == 200 and response.json().get('status'):
+                        download_url = response.json().get('data', {}).get('video_url')
+                        if download_url:
+                            # Descargar el video
+                            video_response = requests.get(download_url, stream=True)
+                            with open(original_file, 'wb') as f:
+                                for chunk in video_response.iter_content(chunk_size=1024*1024):
+                                    if chunk:
+                                        f.write(chunk)
+                            
+                            print("Descarga completada con TikTokDer")
+                            break  # Salir del bucle si la descarga fue exitosa
+                    else:
+                        raise Exception("API no disponible o video no encontrado")
+                
+                elif method == "yt_dlp":
+                    # Método 5: yt-dlp con configuración mejorada para evadir bloqueo IP
+                    # Generar user agent aleatorio
+                    user_agents = [
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
+                    ]
+                    user_agent = random.choice(user_agents)
+                    
+                    # Añadir opciones específicas para evadir bloqueos
+                    ydl_opts = {
+                        'format': 'best[ext=mp4]/best',
+                        'outtmpl': original_file,
+                        'quiet': True,  # Cambiar a False solo para debugging
+                        'verbose': False,
+                        'socket_timeout': 120,  # Tiempo de espera más largo
+                        'retries': 20,  # Más intentos de descarga
+                        'fragment_retries': 20,
+                        'http_headers': {
+                            'User-Agent': user_agent,
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Accept': '*/*',
+                            'Referer': 'https://www.tiktok.com/',
+                            'Origin': 'https://www.tiktok.com'
+                        },
+                        'nocheckcertificate': True,
+                        'no_warnings': True,
+                        'extractor_args': {'tiktok': {'embed_api': ['1'], 'api_hostname': ['api22-normal-c-useast1a.tiktokv.com']}}
+                    }
+                    
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info_dict = ydl.extract_info(url, download=True)
+                        if info_dict and os.path.exists(original_file):
+                            print(f"Video extraído con éxito via yt-dlp")
+                            break  # Salir del bucle si la descarga fue exitosa
+                        else:
+                            raise Exception("Video no descargado correctamente")
+                
+            except Exception as e:
+                print(f"Error con método {method}: {e}")
+                # Continuar al siguiente método si este falla
+        
+        # Verificar si se descargó el archivo
+        if not os.path.exists(original_file) or os.path.getsize(original_file) == 0:
+            print(f"Ninguno de los métodos de descarga funcionó para: {url}")
             return None
             
-        # El resto de la función se mantiene igual (compresión con ffmpeg, etc.)
-        # ...existing code...
-
-        # Añado un fragmento clave de la compresión
+        # Continuar con la compresión si es necesario
         original_size_mb = os.path.getsize(original_file) / (1024 * 1024)
         print(f"Video descargado. Tamaño: {original_size_mb:.2f} MB")
         
@@ -733,7 +935,7 @@ async def download_tiktok_video(url, max_size_mb=8):
                 return None
                 
     except Exception as e:
-        print(f"Error al descargar/comprimir el video: {e}")
+        print(f"Error general en descarga/procesamiento: {e}")
         for f in [original_file, compressed_file]:
             if os.path.exists(f):
                 os.remove(f)
