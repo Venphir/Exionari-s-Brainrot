@@ -587,12 +587,11 @@ async def download_tiktok_video(url, max_size_mb=8):
     try:
         print(f"Intentando descargar video: {url}")
         
-        # MÉTODO 1: Usar ssstik.io como servicio para descargar
+        # MÉTODO 1: Usar TikTok downloader directo (sin depender de BeautifulSoup)
         try:
             import requests
-            from bs4 import BeautifulSoup
             
-            # Extraer el ID del video de la URL - Versión mejorada con manejo de errores
+            # Intentar extraer el ID del video
             try:
                 # Intentar varios patrones comunes de URLs de TikTok
                 if "/video/" in url:
@@ -605,62 +604,45 @@ async def download_tiktok_video(url, max_size_mb=8):
                     
                 print(f"ID del video extraído: {video_id}")
             except Exception as e:
-                print(f"Error al extraer ID del video, usando URL completa: {e}")
-                video_id = url  # Usar URL completa como fallback
-            
-            # Primera petición para obtener el token
-            session = requests.Session()
-            response = session.get("https://ssstik.io/es")
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extraer el token del formulario
-            tt_token = soup.find("form", {"id": "mainform"}).find("input", {"name": "tt"}).get("value")
-            print(f"Token obtenido: {tt_token[:10]}...")
-            
-            # Segunda petición para obtener el enlace de descarga
+                print(f"Error al extraer ID del video: {e}")
+                video_id = "unknown"
+                
+            # Usar un servicio directo de descarga sin necesidad de BS4
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "*/*",
-                "Accept-Language": "es-ES,es;q=0.9",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "Origin": "https://ssstik.io",
-                "Referer": "https://ssstik.io/es",
+                "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+                "Referer": "https://www.tiktok.com/",
+                "Origin": "https://www.tiktok.com"
             }
             
-            data = {
-                "id": url,
-                "tt": tt_token,
-                "format": "",
-                "watermark": "0"
-            }
+            # Intento directo usando URL API alternativa
+            api_url = f"https://api.tikmate.app/api/lookup?url={url}"
+            print(f"Intentando descargar con API alternativa...")
             
-            download_response = session.post("https://ssstik.io/abc?url=dl", headers=headers, data=data)
-            
-            if (download_response.status_code == 200):
-                download_soup = BeautifulSoup(download_response.text, 'html.parser')
-                download_link = download_soup.find("a", {"class": "pure-button pure-button-primary is-center u-bl dl-button download_link without_watermark"})
-                
-                if download_link and download_link.has_attr('href'):
-                    final_url = download_link['href']
-                    print(f"URL de descarga encontrada: {final_url[:50]}...")
+            response = requests.post(api_url, headers=headers)
+            if response.status_code == 200 and response.json().get('success'):
+                token = response.json().get('token')
+                if token:
+                    download_url = f"https://api.tikmate.app/api/download/{token}/{video_id}"
+                    print(f"URL de descarga directa obtenida")
                     
                     # Descargar el video
-                    video_response = session.get(final_url, stream=True)
+                    video_response = requests.get(download_url, headers=headers, stream=True)
+                    
                     with open(original_file, 'wb') as f:
                         for chunk in video_response.iter_content(chunk_size=1024*1024):
                             if chunk:
                                 f.write(chunk)
                     
-                    print("Descarga completada correctamente con ssstik.io")
+                    print("Descarga directa completada correctamente")
                 else:
-                    print("No se encontró el enlace de descarga en ssstik.io")
-                    raise Exception("Enlace de descarga no encontrado")
+                    raise Exception("No se pudo obtener un token válido")
             else:
-                print(f"Error en la respuesta de ssstik.io: {download_response.status_code}")
-                raise Exception(f"Error HTTP: {download_response.status_code}")
+                raise Exception("API de descarga no disponible")
                 
         except Exception as e:
-            print(f"Error con el método ssstik.io: {e}")
+            print(f"Error con el método de descarga directa: {e}")
             print("Intentando método alternativo con yt-dlp...")
             
             # MÉTODO 2: Intentar con yt-dlp configurado para evadir bloqueos
@@ -681,7 +663,6 @@ async def download_tiktok_video(url, max_size_mb=8):
                 },
                 'nocheckcertificate': True,
                 'no_warnings': False,
-                'cookiefile': 'cookies.txt',  # Si tienes un archivo de cookies, úsalo
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
