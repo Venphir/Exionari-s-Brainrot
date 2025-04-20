@@ -5,7 +5,8 @@ import random
 import os
 from dotenv import load_dotenv
 import json
-import asyncio  # Usaremos asyncio.Lock en lugar de threading.Lock
+import asyncio
+import time  # Faltaba importar el módulo time
 
 # Cargar variables de entorno desde el archivo .env
 dotenv_path = ".env"
@@ -261,13 +262,18 @@ async def enviar_video(interaction: discord.Interaction):
 
     theme = random.choice(themes)
     try:
-        videos = api.by_hashtag(theme.lstrip('#'), count=10)
+        # Corregir el método by_hashtag que no existe, usando la misma lógica de send_random_video
+        hashtag_data = api.hashtag(name=theme.lstrip('#'))
+        videos = []
+        async for video in hashtag_data.videos(count=10):
+            videos.append(video)
+            
         if not videos:
             await interaction.response.send_message(f"No se encontraron videos para el tema: {theme}", ephemeral=True)
             return
 
         video = random.choice(videos)
-        video_url = f"https://www.tiktok.com/@{video['author']['uniqueId']}/video/{video['id']}"
+        video_url = f"https://www.tiktok.com/@{video.author.username}/video/{video.id}"
 
         permissions = interaction.channel.permissions_for(interaction.guild.me)
         if not permissions.send_messages:
@@ -307,9 +313,9 @@ async def on_ready():
                 print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
 
         send_random_video.start()
-        clean_timestamps.start()
+        clean_timestamps.start()  # Asegurar que esta tarea se inicie
     except Exception as e:
-        print(f"Error al iniciar la tarea periódica: {e}")
+        print(f"Error al iniciar las tareas periódicas: {e}")
 
 # Remover el evento de manejo de errores de cooldown que ya no es necesario
 # @bot.event
