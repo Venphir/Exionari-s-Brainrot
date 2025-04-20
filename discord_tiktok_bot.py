@@ -11,7 +11,8 @@ import tempfile
 import yt_dlp  # Nueva biblioteca para descargar videos
 import subprocess  # Para llamar a ffmpeg para compresión
 import math  # Para cálculos de calidad de compresión
-import io
+import requests as http_requests  # Renombrar para evitar conflictos
+
 import pickle
 
 # Cargar variables de entorno desde el archivo .env
@@ -299,24 +300,39 @@ async def prefix_send_video(ctx):
         video_url = video_info['url']
         print(f"[_enviar_video] Video seleccionado: {video_url}")
         # Actualizar el mensaje
-        await loading_msg.edit(content=f"⬇️ Descargando video de **{theme}**... Por favor espera.")
-        # Descargar el video con compresión si es necesario
-        video_file = await download_tiktok_video(video_url)
-        if video_file:
-            # Enviar el video como archivo
-            await ctx.send(
-                content=f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {video_url}",
-                file=discord.File(video_file)
-            )
+        await loading_msg.edit(content=f"⬇️ Preparando video de **{theme}**... Por favor espera.")
+        # Usar la función modificada que ahora devuelve (file_path, embedez_url)
+        video_file, embedez_url = await download_tiktok_video(video_url)
+        
+        # Si tenemos una URL de embedez, la usamos (caso normal)
+        if embedez_url:
+            content_msg = f"🎬 Aquí tienes un video de **{theme}**: {embedez_url}"
+            await ctx.send(content=content_msg)
+            
             # Eliminar el mensaje de carga
             try:
                 await loading_msg.delete()
             except:
                 pass
-            # Eliminar el archivo temporal
-            os.remove(video_file)
+        
+        # Si tenemos un archivo local (caso de fallback), lo enviamos
+        elif video_file:
+            content_msg = f"⚠️ No se pudo obtener el video de TikTok. Aquí tienes un video de respaldo para **{theme}**."
+            await ctx.send(
+                content=content_msg,
+                file=discord.File(video_file)
+            )
+            
+            # Eliminar el mensaje de carga
+            try:
+                await loading_msg.delete()
+            except:
+                pass
+        
+        # Si no tenemos ni url ni archivo (error total)
         else:
-            await ctx.send(f"⚠️ No se pudo descargar el video (probablemente demasiado grande). Aquí está el enlace: {video_url}")
+            await ctx.send(f"⚠️ No se pudo procesar el video. Aquí está el enlace original: {video_url}")
+            
     except Exception as e:
         error_msg = str(e)
         await ctx.send(f"❌ Error al obtener el video: {error_msg}")
@@ -415,20 +431,23 @@ FALLBACK_VIDEOS = [
 # Función mejorada para buscar videos por hashtag con múltiples fuentes alternativas
 async def get_tiktok_videos_by_hashtag(hashtag, count=5, use_cache=True):
     """Obtiene videos de TikTok relacionados con el hashtag usando múltiples métodos."""
+    global theme_video_registry
+    
     print(f"Buscando videos para hashtag: {hashtag}")
     hashtag_clean = hashtag.lstrip('#').lower()
     videos_info = []
     
-    # Verificar si tenemos videos en caché
+    # NUEVO: Verificar primero el sistema de caché
     if use_cache and hashtag_clean in theme_video_registry:
-        cached_videos = theme_video_registry[hashtag_clean]
-        print(f"Usando videos en caché para {hashtag_clean}, {len(cached_videos)} disponibles")
-        random.shuffle(cached_videos)
-        return cached_videos[:count]  # Devolver los mismos
+        cached_videos = theme_video_registry.get(hashtag_clean, []) # Usar .get para evitar KeyError
+        if cached_videos:
+            print(f"Usando videos en caché para {hashtag_clean}, {len(cached_videos)} disponibles")
+            # Barajar para no mostrar siempre los mismos
+            random.shuffle(cached_videos)
+            return cached_videos[:count]
     
     # MÉTODO 1: Búsqueda directa por tema en sitios alternativos
     try:
-        import requests
         # Conjunto de URLs alternativas para búsqueda (más probabilidades de éxito)
         urls_to_try = [
             f"https://tiktokder.com/api/short/search?keyword={hashtag_clean}&count=10",
@@ -450,55 +469,66 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5, use_cache=True):
         # Intentar cada URL hasta obtener resultados
         for api_url in urls_to_try:
             try:
-                response = requests.get(api_url, headers=headers, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    # Extraer videos según la estructura de cada API
-                    if "data" in data:
-                        # Formato API de TikTok
-                        if isinstance(data["data"], list):
-                            for item in data["data"][:count*2]:
-                                if item.get('type') == 'video' and 'item' in item:
-                                    item_data = item['item']
-                                    if 'id' in item_data and 'author' in item_data:
-                                        username = item_data['author'].get('uniqueId') or item_data['author'].get('nickname', 'tiktok_user')
-                                        video_url = f"https://www.tiktok.com/@{username}/video/{item_data['id']}"
-                                        videos_info.append({
-                                            'id': item_data['id'],
-                                            'url': video_url,
-                                            'title': item_data.get('desc', f'Video de {username}'),
-                                            'uploader': username
-                                        })
-                    elif "videos" in data:
-                        # Formato API de TikTokder
-                        for video in data["videos"][:count*2]:
-                            if 'video_id' in video:
-                                video_url = f"https://www.tiktok.com/@{video.get('author', 'user')}/video/{video['video_id']}"
-                                videos_info.append({
-                                    'id': video['video_id'],
-                                    'url': video_url,
-                                    'title': video.get('title', 'Video de TikTok'),
-                                    'uploader': video.get('author', 'TikTok user')
-                                })
-                    elif "items" in data:
-                        # Formato tikwm API
-                        for video in data["items"][:count*2]:
-                            if 'id' in video and 'author' in video:
-                                video_url = video.get('share_url') or f"https://www.tiktok.com/@{video['author']['unique_id']}/video/{video['id']}"
-                                videos_info.append({
-                                    'id': video['id'],
-                                    'url': video_url,
-                                    'title': video.get('title', 'Video de TikTok'),
-                                    'uploader': video['author'].get('unique_id', 'TikTok user')
-                                })
+                # Añadir manejo específico para errores de conexión/DNS
+                response = http_requests.get(api_url, headers=headers, timeout=15) # Utilizar http_requests en lugar de requests
+                response.raise_for_status() # Verificar errores HTTP
+                
+                # Procesar la respuesta JSON
+                data = response.json()  # Asignar respuesta a la variable data
+                
+                # Extraer videos según la estructura de cada API
+                if "data" in data:
+                    # Formato API de TikTok
+                    if isinstance(data["data"], list):
+                        for item in data["data"][:count*2]:
+                            if item.get('type') == 'video' and 'item' in item:
+                                item_data = item['item']
+                                if 'id' in item_data and 'author' in item_data:
+                                    username = item_data['author'].get('uniqueId') or item_data['author'].get('nickname', 'tiktok_user')
+                                    video_url = f"https://www.tiktok.com/@{username}/video/{item_data['id']}"
+                                    videos_info.append({
+                                        'id': item_data['id'],
+                                        'url': video_url,
+                                        'title': item_data.get('desc', f'Video de {username}'),
+                                        'uploader': username
+                                    })
+                elif "videos" in data:
+                    # Formato API de TikTokder
+                    for video in data["videos"][:count*2]:
+                        if 'video_id' in video:
+                            video_url = f"https://www.tiktok.com/@{video.get('author', 'user')}/video/{video['video_id']}"
+                            videos_info.append({
+                                'id': video['video_id'],
+                                'url': video_url,
+                                'title': video.get('title', 'Video de TikTok'),
+                                'uploader': video.get('author', 'TikTok user')
+                            })
+                elif "items" in data:
+                    # Formato tikwm API
+                    for video in data["items"][:count*2]:
+                        if 'id' in video and 'author' in video:
+                            video_url = video.get('share_url') or f"https://www.tiktok.com/@{video['author']['unique_id']}/video/{video['id']}"
+                            videos_info.append({
+                                'id': video['id'],
+                                'url': video_url,
+                                'title': video.get('title', 'Video de TikTok'),
+                                'uploader': video['author'].get('unique_id', 'TikTok user')
+                            })
                 # Si encontramos suficientes videos, salimos
                 if len(videos_info) >= count:
                     break
+            except http_requests.exceptions.RequestException as e: # Capturar errores de requests
+                print(f"Error de red/HTTP con API {api_url}: {e}")
+                continue # Intentar la siguiente URL
+            except json.JSONDecodeError as e:
+                print(f"Error al decodificar JSON de {api_url}: {e}")
+                continue
             except Exception as e:
-                print(f"Error con API {api_url}: {e}")
+                print(f"Error inesperado con API {api_url}: {e}")
                 continue
     except Exception as e:
-        print(f"Error en búsqueda directa: {e}")
+        print(f"Error general en búsqueda directa: {e}")
+    
     # MÉTODO 2: Búsqueda temática
     # Si no se encontraron videos, buscar por temas relacionados
     if not videos_info:
@@ -596,277 +626,53 @@ async def get_tiktok_videos_by_hashtag(hashtag, count=5, use_cache=True):
             })
     print(f"Total de videos encontrados: {len(videos_info)}")
     # Guardar en caché para futuras búsquedas
-    if use_cache:
+    if videos_info and use_cache: # Solo guardar si se encontraron videos
         theme_video_registry[hashtag_clean] = videos_info
-        with open(THEME_VIDEO_REGISTRY, "wb") as f:
-            pickle.dump(theme_video_registry, f)
-        print(f"Videos para '{hashtag_clean}' agregados a caché: {len(videos_info)}")
+        try: # Añadir try-except al guardar caché
+            with open(THEME_VIDEO_REGISTRY, "wb") as f:
+                pickle.dump(theme_video_registry, f)
+            print(f"Videos para '{hashtag_clean}' agregados a caché: {len(videos_info)}")
+        except Exception as e:
+            print(f"Error al guardar caché de videos: {e}")
+
     return videos_info
-# Función actualizada para descargar videos con múltiples métodos de respaldo
+
+# Nueva función para convertir URLs de TikTok al formato de embedez.com
+def convert_to_embedez(url):
+    """Convierte una URL de TikTok normal al formato de embedez.com para embeds directos."""
+    # Verificar si es una URL de TikTok
+    if 'tiktok.com' not in url:
+        return url
+    
+    # Reemplazar tiktok.com por tiktokez.com
+    return url.replace('tiktok.com', 'tiktokez.com')
+
+# Simplificar la función download_tiktok_video para usar el método embedez
 async def download_tiktok_video(url, max_size_mb=8):
-    """Descarga videos de TikTok usando múltiples métodos para evadir bloqueos."""
-    temp_dir = tempfile.gettempdir()
-    temp_id = int(time.time())
-    original_file = os.path.join(temp_dir, f"tiktok_original_{temp_id}.mp4")
-    compressed_file = os.path.join(temp_dir, f"tiktok_compressed_{temp_id}.mp4")
+    """
+    Ahora esta función simplemente retorna la URL convertida para embedez.com
+    Mantenemos el fallback a video local en caso de emergencia
+    """
+    # Definir la ruta del video de fallback
+    fallback_video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "videos", "fallback_video.mp4")
+    
     try:
-        print(f"Intentando descargar video: {url}")
+        # Convertir la URL para embedez
+        embedez_url = convert_to_embedez(url)
+        print(f"Usando embedez para: {url} -> {embedez_url}")
         
-        # Extraer el ID del video para utilizar en los métodos de descarga
-        try:
-            if "/video/" in url:
-                video_id = url.split("/video/")[1].split("?")[0]
-            elif "/v/" in url:
-                video_id = url.split("/v/")[1].split("?")[0]
-            else:
-                video_id = url.split("/")[-1].split("?")[0]
-            print(f"ID del video extraído: {video_id}")
-        except Exception as e:
-            print(f"Error al extraer ID del video: {e}")
-            video_id = "unknown"
-        # Lista de servicios de descarga para intentar
-        download_methods = [
-            "snaptik", "tikmate", "tikwm", "tiktokder", "yt_dlp"
-        ]
+        # Devolvemos tanto la URL embedez como None para archivo local
+        # Esto permite a las funciones que llaman saber que deben usar el embed en lugar de archivo
+        return None, embedez_url
         
-        # Intentar métodos de descarga en secuencia hasta que uno funcione
-        for method in download_methods:
-            try:
-                print(f"Intentando método: {method}")
-                
-                if method == "snaptik":
-                    # Método 1: SnapTik
-                    import requests
-                    snaptik_headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "*/*",
-                        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-                        "Origin": "https://snaptik.app",
-                        "Referer": "https://snaptik.app/"
-                    }
-                    # Primera solicitud para obtener token
-                    response = requests.get("https://snaptik.app/", headers=snaptik_headers)
-                    # Extraer token manualmente ya que no estamos usando BeautifulSoup
-                    html_content = response.text
-                    token_start = html_content.find('name="token" value="') + 19
-                    token_end = html_content.find('"', token_start)
-                    token = html_content[token_start:token_end]
-                    if token:
-                        print(f"Token SnapTik obtenido: {token[:10]}...")
-                        
-                        # Segunda solicitud para obtener enlaces de descarga
-                        form_data = {
-                            "url": url,
-                            "token": token
-                        }
-                        download_response = requests.post(
-                            "https://snaptik.app/action.php", 
-                            headers={**snaptik_headers, "Content-Type": "application/x-www-form-urlencoded"}, 
-                            data=form_data
-                        )
-                        if "https:" in download_response.text and ".mp4" in download_response.text:
-                            # Extraer URL de descarga del HTML
-                            response_html = download_response.text
-                            download_url_start = response_html.find('href="https:') + 6
-                            download_url_end = response_html.find('"', download_url_start)
-                            download_url = response_html[download_url_start:download_url_end].replace("&amp;", "&")
-                            
-                            if download_url and download_url.startswith("https") and ".mp4" in download_url:
-                                print(f"URL de descarga SnapTik encontrada")
-                                # Descargar el video
-                                video_response = requests.get(download_url, headers=snaptik_headers, stream=True)
-                                with open(original_file, 'wb') as f:
-                                    for chunk in video_response.iter_content(chunk_size=1024*1024):
-                                        if chunk:
-                                            f.write(chunk)
-                                print("Descarga completada con SnapTik")
-                                break  # Salir del bucle si la descarga fue exitosa
-                            else:
-                                raise Exception("URL de descarga no válida")
-                        else:
-                            raise Exception("No se encontró enlace de descarga en la respuesta")
-                    else:
-                        raise Exception("No se pudo obtener el token")
-                elif method == "tikmate":
-                    # Método 2: TikMate
-                    import requests
-                    api_url = f"https://api.tikmate.app/api/lookup?url={url}"
-                    headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "*/*",
-                        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-                        "Referer": "https://tikmate.app/",
-                        "Origin": "https://tikmate.app"
-                    }
-                    response = requests.post(api_url, headers=headers)
-                    if response.status_code == 200 and response.json().get('success'):
-                        token = response.json().get('token')
-                        if token:
-                            download_url = f"https://api.tikmate.app/api/download/{token}/{video_id}"
-                            # Descargar el video
-                            video_response = requests.get(download_url, headers=headers, stream=True)
-                            with open(original_file, 'wb') as f:
-                                for chunk in video_response.iter_content(chunk_size=1024*1024):
-                                    if chunk:
-                                        f.write(chunk)
-                            print("Descarga completada con TikMate")
-                            break  # Salir del bucle si la descarga fue exitosa
-                        else:
-                            raise Exception("Token no obtenido")
-                    else:
-                        raise Exception("API no disponible")
-                elif method == "tikwm":
-                    # Método 3: TikWM
-                    import requests
-                    api_url = "https://www.tikwm.com/api/"
-                    headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "application/json",
-                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                        "Origin": "https://www.tikwm.com",
-                        "Referer": "https://www.tikwm.com/"
-                    }
-                    data = {
-                        "url": url,
-                        "hd": "1"
-                    }
-                    response = requests.post(api_url, headers=headers, data=data)
-                    if response.status_code == 200 and response.json().get('success'):
-                        data = response.json().get('data', {})
-                        if 'play' in data:
-                            download_url = data['play']
-                            # Descargar el video
-                            video_response = requests.get(download_url, headers=headers, stream=True)
-                            with open(original_file, 'wb') as f:
-                                for chunk in video_response.iter_content(chunk_size=1024*1024):
-                                    if chunk:
-                                        f.write(chunk)
-                            print("Descarga completada con TikWM")
-                            break  # Salir del bucle si la descarga fue exitosa
-                        else:
-                            raise Exception("API no disponible o video no encontrado")
-                elif method == "tiktokder":
-                    # Método 4: TikTokDer
-                    import requests
-                    api_url = "https://tiktokder.com/api/short/get"
-                    headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                        "Origin": "https://tiktokder.com",
-                        "Referer": "https://tiktokder.com/"
-                    }
-                    data = {"url": url}
-                    response = requests.post(api_url, headers=headers, json=data)
-                    if response.status_code == 200 and response.json().get('status'):
-                        download_url = response.json().get('data', {}).get('video_url')
-                        if download_url:
-                            # Descargar el video
-                            video_response = requests.get(download_url, stream=True)
-                            with open(original_file, 'wb') as f:
-                                for chunk in video_response.iter_content(chunk_size=1024*1024):
-                                    if chunk:
-                                        f.write(chunk)
-                            print("Descarga completada con TikTokDer")
-                            break  # Salir del bucle si la descarga fue exitosa
-                    else:
-                        raise Exception("API no disponible o video no encontrado")
-                elif method == "yt_dlp":
-                    # Método 5: yt-dlp con configuración mejorada para evadir bloqueo IP
-                    # Generar user agent aleatorio
-                    user_agents = [
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
-                    ]
-                    user_agent = random.choice(user_agents)
-                    # Añadir opciones específicas para evadir bloqueos
-                    ydl_opts = {
-                        'format': 'best[ext=mp4]/best',
-                        'outtmpl': original_file,
-                        'quiet': True,  # Cambiar a False solo para debugging
-                        'verbose': False,
-                        'socket_timeout': 120,  # Tiempo de espera más largo
-                        'retries': 20,  # Más intentos de descarga
-                        'fragment_retries': 20,
-                        'http_headers': {
-                            'User-Agent': user_agent,
-                            'Accept-Language': 'en-US,en;q=0.9',
-                            'Accept': '*/*',
-                            'Referer': 'https://www.tiktok.com/',
-                            'Origin': 'https://www.tiktok.com'
-                        },
-                        'nocheckcertificate': True,
-                        'no_warnings': True,
-                        'extractor_args': {'tiktok': {'embed_api': ['1'], 'api_hostname': ['api22-normal-c-useast1a.tiktokv.com']}}
-                    }
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info_dict = ydl.extract_info(url, download=True)
-                        if info_dict and os.path.exists(original_file):
-                            print(f"Video extraído con éxito via yt-dlp")
-                            break  # Salir del bucle si la descarga fue exitosa
-                        else:
-                            raise Exception("Video no descargado correctamente")
-            except Exception as e:
-                print(f"Error con método {method}: {e}")
-                # Continuar al siguiente método si este falla
-        # Verificar si se descargó el archivo
-        if not os.path.exists(original_file) or os.path.getsize(original_file) == 0:
-            print(f"Ninguno de los métodos de descarga funcionó para: {url}")
-            return None
-        # Continuar con la compresión si es necesario
-        original_size_mb = os.path.getsize(original_file) / (1024 * 1024)
-        print(f"Video descargado. Tamaño: {original_size_mb:.2f} MB")
-        # Si el archivo es menor al límite, usarlo directamente
-        if original_size_mb <= max_size_mb:
-            print(f"El video está dentro del límite de tamaño, enviándolo sin comprimir")
-            return original_file
-        # Si es más grande, comprimir con ffmpeg
-        print(f"Comprimiendo video (tamaño original: {original_size_mb:.2f} MB)...")
-        # Calcula el factor de calidad basado en tamaño original
-        crf = min(51, max(18, 23 + int(math.log(original_size_mb / max_size_mb) * 5)))
-        # Comprimir con ffmpeg
-        try:
-            ffmpeg_cmd = [
-                'ffmpeg', '-i', original_file,
-                '-c:v', 'libx264', '-crf', str(crf),
-                '-preset', 'veryfast', 
-                '-c:a', 'aac', '-b:a', '128k',
-                '-y', compressed_file
-            ]
-            print(f"Ejecutando comando: {' '.join(ffmpeg_cmd)}")
-            process = subprocess.run(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            if process.returncode != 0:
-                print(f"Error en ffmpeg: {process.stderr.decode()}")
-                return original_file
-            compressed_size_mb = os.path.getsize(compressed_file) / (1024 * 1024)
-            print(f"Video comprimido. Nuevo tamaño: {compressed_size_mb:.2f} MB")
-            
-            if compressed_size_mb > max_size_mb:
-                print(f"Video sigue siendo demasiado grande ({compressed_size_mb:.2f} MB)")
-                os.remove(compressed_file)
-                os.remove(original_file)
-                return None
-            os.remove(original_file)
-            return compressed_file
-        except Exception as e:
-            print(f"Error en la compresión: {e}")
-            if original_size_mb <= max_size_mb * 1.2:  # 20% de tolerancia
-                return original_file
-            else:
-                os.remove(original_file)
-                return None
     except Exception as e:
-        print(f"Error general en descarga/procesamiento: {e}")
-        for f in [original_file, compressed_file]:
-            if os.path.exists(f):
-                os.remove(f)
-        return None
+        print(f"Error al procesar URL con embedez: {e}")
+        # Si algo sale mal, intentar usar video de fallback como último recurso
+        if os.path.exists(fallback_video_path):
+            print("Usando video de respaldo local debido a error.")
+            return fallback_video_path, None
+        return None, None
+
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=1)
 async def send_random_video():
@@ -897,15 +703,26 @@ async def send_random_video():
         if not permissions.embed_links:
             print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
                 
-        video_file = await download_tiktok_video(video_url)
-        if video_file:
+        # Usar la función modificada
+        video_file, embedez_url = await download_tiktok_video(video_url)
+        
+        if embedez_url:
+            # Usar la URL de embedez directamente
+            content_msg = f"Aquí tienes un video de {theme}: {embedez_url}"
+            await channel.send(content_msg)
+            
+        elif video_file:
+            # Caso de fallback con archivo local
+            content_msg = f"⚠️ No se pudo obtener el video de TikTok. Aquí tienes un video de respaldo para **{theme}**."
             await channel.send(
-                content=f"Aquí tienes un video de {theme}: {video_url}",
+                content=content_msg,
                 file=discord.File(video_file)
             )
-            os.remove(video_file)
+            
         else:
+            # Error total
             await channel.send(f"Aquí tienes un video de {theme}: {video_url}")
+            
     except Exception as e:
         print(f"Error al obtener o enviar videos: {e}")
 # Comando de aplicación (slash command) para enviar un video aleatorio
@@ -935,32 +752,35 @@ async def enviar_video(interaction: discord.Interaction):
         print(f"[/enviar_video] Video seleccionado: {video_url}")
         # Informar que se está descargando:
         try:
-            await searching_msg.edit(content=f"⬇️ Descargando video de **{theme}**... Por favor espera.")
+            await searching_msg.edit(content=f"⬇️ Preparando video de **{theme}**... Por favor espera.")
         except:
             pass  # Ignorar errores de edición
-        # Descargar el video con timeout ampliado
-        video_file = await download_tiktok_video(video_url)
-        if video_file:
-            print(f"[/enviar_video] Enviando video desde archivo: {video_file}")
+        # Usar la función modificada
+        video_file, embedez_url = await download_tiktok_video(video_url)
+        
+        if embedez_url:
+            # Usar la URL de embedez directamente
+            content_msg = f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {embedez_url}"
+            await interaction.followup.send(content=content_msg)
+            
+            # Intentar eliminar el mensaje de búsqueda
             try:
-                # Enviar el video como archivo
-                await interaction.followup.send(
-                    content=f"🎬 ¡Listo! Aquí tienes un video de **{theme}**: {video_url}",
-                    file=discord.File(video_file)
-                )
-                # Eliminar el archivo temporal
-                os.remove(video_file)
-                # Eliminar el mensaje de búsqueda
-                try:
-                    await searching_msg.delete()
-                except:
-                    pass
-            except discord.HTTPException as http_err:
-                print(f"Error HTTP al enviar video: {http_err}")
-                await interaction.followup.send(f"⚠️ Error al enviar el video. Aquí está el enlace: {video_url}")
+                await searching_msg.delete()
+            except:
+                pass
+                
+        elif video_file:
+            # Caso de fallback con archivo local
+            content_msg = f"⚠️ No se pudo obtener el video de TikTok. Aquí tienes un video de respaldo para **{theme}**."
+            await interaction.followup.send(
+                content=content_msg,
+                file=discord.File(video_file)
+            )
+            
         else:
-            # Si no se pudo descargar, enviar solo el enlace
-            await interaction.followup.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {video_url}")
+            # Error total
+            await interaction.followup.send(f"⚠️ No se pudo procesar el video. Aquí está el enlace original: {video_url}")
+            
     except Exception as e:
         # Manejar cualquier error de manera segura
         error_msg = str(e)
@@ -990,25 +810,32 @@ async def video_directo(interaction: discord.Interaction, url: str):
     await interaction.response.defer(thinking=True)
     try:
         # Informar al usuario
-        searching_msg = await interaction.followup.send(f"⬇️ Descargando video... Por favor espera.")
-        # Intentar descargar el video
-        video_file = await download_tiktok_video(url)
-        if video_file:
-            # Enviar el video como archivo
-            await interaction.followup.send(
-                content=f"🎬 ¡Listo! Aquí tienes tu video: {url}",
-                file=discord.File(video_file)
-            )
-            # Eliminar el archivo temporal
-            os.remove(video_file)
-            # Eliminar el mensaje de búsqueda
+        searching_msg = await interaction.followup.send(f"⬇️ Preparando video... Por favor espera.")
+        
+        # Usar nuestra nueva función simplificada
+        video_file, embedez_url = await download_tiktok_video(url)
+        
+        if embedez_url:
+            # Usar la URL de embedez directamente
+            await interaction.followup.send(f"🎬 ¡Listo! Aquí tienes tu video: {embedez_url}")
+            
+            # Intentar eliminar el mensaje de búsqueda
             try:
                 await searching_msg.delete()
             except:
                 pass
+                
+        elif video_file:
+            # Caso de fallback con archivo local
+            await interaction.followup.send(
+                content="⚠️ No se pudo obtener el embed del video. Usando video de respaldo.",
+                file=discord.File(video_file)
+            )
+            
         else:
-            # Si no se pudo descargar, enviar solo el enlace
-            await interaction.followup.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {url}")
+            # Error total
+            await interaction.followup.send(f"⚠️ No se pudo procesar el video. Aquí está el enlace original: {url}")
+            
     except Exception as e:
         error_msg = str(e)
         print(f"Error al descargar el video directo: {error_msg}")
@@ -1027,25 +854,37 @@ async def prefix_video_directo(ctx, url: str):
         await ctx.send("❌ Por favor proporciona una URL válida de TikTok.")
         return
     # Informar al usuario
-    loading_msg = await ctx.send("⬇️ Descargando video... Por favor espera.")
+    loading_msg = await ctx.send("⬇️ Preparando video... Por favor espera.")
     try:
-        # Intentar descargar el video
-        video_file = await download_tiktok_video(url)
-        if video_file:
-            # Enviar el video como archivo
-            await ctx.send(
-                content=f"🎬 ¡Listo! Aquí tienes tu video: {url}",
-                file=discord.File(video_file)
-            )
-            # Eliminar el archivo temporal
-            os.remove(video_file)
+        # Usar nuestra nueva función simplificada
+        video_file, embedez_url = await download_tiktok_video(url)
+        
+        if embedez_url:
+            # Usar la URL de embedez directamente
+            await ctx.send(f"🎬 ¡Listo! Aquí tienes tu video: {embedez_url}")
+            
             # Eliminar el mensaje de carga
             try:
                 await loading_msg.delete()
             except:
                 pass
+                
+        elif video_file:
+            # Caso de fallback con archivo local
+            await ctx.send(
+                content="⚠️ No se pudo obtener el embed del video. Usando video de respaldo.",
+                file=discord.File(video_file)
+            )
+            
+            # Eliminar el mensaje de carga
+            try:
+                await loading_msg.delete()
+            except:
+                pass
+                
         else:
-            await ctx.send(f"⚠️ No se pudo descargar el video. Aquí está el enlace: {url}")
+            # Error total
+            await ctx.send(f"⚠️ No se pudo procesar el video. Aquí está el enlace original: {url}")
     except Exception as e:
         error_msg = str(e)
         await ctx.send(f"❌ Error: {error_msg}")
