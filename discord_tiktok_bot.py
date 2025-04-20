@@ -98,18 +98,21 @@ async def assign_theme(ctx, *args):
         already_added = [theme for theme in new_themes if theme in themes]
         new_to_add = [theme for theme in new_themes if theme not in themes]
 
+        # Solo un mensaje de respuesta, según el caso
         if already_added and not new_to_add:
-            await ctx.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}\nTemas actuales: {', '.join(themes)}")
-            return
-        if new_to_add:
+            await ctx.send(f"Los siguientes temas ya están agregados: {', '.join(already_added)}.\nTemas actuales: {', '.join(themes)}")
+        elif new_to_add and not already_added:
             themes.extend(new_to_add)
             save_themes()
-            msg = ""
-            if already_added:
-                msg += f"Los siguientes temas ya están agregados: {', '.join(already_added)}\n"
-            msg += f"Nuevos temas agregados: {', '.join(new_to_add)}\nTemas actuales: {', '.join(themes)}"
-            await ctx.send(msg)
-            return
+            await ctx.send(f"Nuevos temas agregados: {', '.join(new_to_add)}.\nTemas actuales: {', '.join(themes)}")
+        elif new_to_add and already_added:
+            themes.extend(new_to_add)
+            save_themes()
+            await ctx.send(
+                f"Los siguientes temas ya estaban agregados: {', '.join(already_added)}.\n"
+                f"Nuevos temas agregados: {', '.join(new_to_add)}.\n"
+                f"Temas actuales: {', '.join(themes)}"
+            )
 
 # Comando para eliminar un tema (hashtag)
 @bot.command(name='eliminar_tema')
