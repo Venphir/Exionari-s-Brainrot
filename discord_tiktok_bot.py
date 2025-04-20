@@ -3,6 +3,11 @@ from discord.ext import commands, tasks
 from TikTokApi import TikTokApi
 import random
 import asyncio
+import os
+from dotenv import load_dotenv
+
+# Cargar variables de entorno desde el archivo .env
+load_dotenv()
 
 # Configuración del bot de Discord
 bot = commands.Bot(command_prefix='_')
@@ -40,7 +45,7 @@ async def send_random_video():
         video_url = f"https://www.tiktok.com/@{video['author']['uniqueId']}/video/{video['id']}"
 
         # Enviar el enlace al canal
-        channel = bot.get_channel('1363398384890941611')  # Reemplaza con el ID real del canal
+        channel = bot.get_channel(1363398384890941611)  # ID del canal especificado
         await channel.send(f"Aquí tienes un video de {theme}: {video_url}")
 
     except Exception as e:
@@ -52,5 +57,5 @@ async def on_ready():
     print(f'Bot conectado como {bot.user}')
     send_random_video.start()  # Iniciar la tarea periódica
 
-# Reemplaza 'YOUR_BOT_TOKEN' con el token real de tu bot
-bot.run('MTM2MzM5NTM4MzcwNzA0NTkxOQ.GixQ5A.S59vc_BnRMCX2nhM8GDMeHDN5ALti-dATc22iw')
+# Cargar el token desde el archivo .env
+bot.run(os.getenv('BOT_TOKEN'))
