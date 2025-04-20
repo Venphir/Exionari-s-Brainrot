@@ -23,12 +23,12 @@ bot = commands.Bot(command_prefix='_', intents=intents)
 
 # Configuración de la API de TikTok
 try:
-    # Ruta al archivo de cookies
-    cookies_file = "cookies.txt"  # Asegúrate de que este archivo exista y sea válido
-
-    # Inicializar TikTokApi con el archivo de cookies
-    api = TikTokApi(cookies=cookies_file)
-    api.create_session()  # Crear una sesión antes de usar la API
+    # Inicializar TikTokApi y crear sesión correctamente según la documentación más reciente
+    api = TikTokApi()
+    # La creación de sesión ahora es asíncrona y debe llamarse así:
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(api.create_sessions())
     print("TikTokApi inicializada correctamente.")
 except Exception as e:
     print(f"Error al inicializar TikTokApi: {e}")
