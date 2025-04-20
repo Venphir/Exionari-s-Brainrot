@@ -32,7 +32,7 @@ except Exception as e:
 themes_file = "themes.json"
 
 # Configuración del canal desde el archivo .env
-channel_id = os.getenv("DISCORD_CHANNEL_ID")
+channel_id = os.getenv("1363398384890941611")
 if not channel_id:
     raise ValueError("El ID del canal no se ha encontrado. Asegúrate de que el archivo .env contiene 'DISCORD_CHANNEL_ID'.")
 
