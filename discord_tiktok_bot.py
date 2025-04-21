@@ -70,6 +70,9 @@ bot = commands.Bot(command_prefix='_', intents=intents, help_command=None)
 # Ruta del archivo para almacenar los temas
 themes_file = "themes.json"
 
+# Ruta del archivo para almacenar la configuración del intervalo
+config_file = "config.json"
+
 # Configuración del canal desde el archivo .env
 try:
     channel_id_str = os.getenv("DISCORD_CHANNEL_ID")
@@ -119,6 +122,46 @@ def transform_to_embedez_url(instagram_url):
     print(f"[transform_to_embedez_url] URL transformada: {embedez_url}")
     return embedez_url
 
+# Función para cargar la configuración del intervalo
+def load_config():
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                print(f"Configuración cargada: {config}")
+                return config
+        except json.JSONDecodeError:
+            print("Error: El archivo config.json está corrupto. Usando configuración predeterminada.")
+            return {"interval": 5, "unit": "minutes"}
+        except Exception as e:
+            print(f"Error al cargar la configuración desde el archivo: {e}")
+            return {"interval": 5, "unit": "minutes"}
+    else:
+        print("No se encontró config.json. Usando configuración predeterminada.")
+        return {"interval": 5, "unit": "minutes"}
+
+# Función para guardar la configuración del intervalo
+def save_config(config):
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
+    print("Configuración guardada correctamente.")
+
+# Cargar la configuración inicial
+config = load_config()
+interval = config["interval"]
+unit = config["unit"]
+
+# Convertir el intervalo a segundos para la tarea
+def get_interval_in_seconds(interval, unit):
+    if unit == "minutes":
+        return interval * 60
+    elif unit == "hours":
+        return interval * 3600
+    elif unit == "days":
+        return interval * 86400
+    else:
+        raise ValueError(f"Unidad de tiempo no válida: {unit}")
+
 # Evento cuando el bot está listo
 @bot.event
 async def on_ready():
@@ -140,6 +183,7 @@ async def on_ready():
                 if not permissions.embed_links:
                     print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
         
+        # Iniciar las tareas
         send_random_video.start()
         clean_timestamps.start()
         clean_recent_videos.start()
@@ -389,6 +433,80 @@ async def slash_clear_cache(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Error al limpiar el caché: {str(e)}")
         print(f"[slash_clear_cache] Error al limpiar el caché: {e}")
 
+# Comando para configurar el intervalo de envío automático
+@bot.command(name='configurar_intervalo')
+async def configure_interval(ctx, interval: int, unit: str):
+    global config
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    unit = unit.lower()
+    if unit not in ["minutes", "hours", "days"]:
+        await ctx.send("❌ Unidad de tiempo no válida. Usa 'minutes', 'hours' o 'days'.")
+        return
+    
+    if interval <= 0:
+        await ctx.send("❌ El intervalo debe ser un número mayor que 0.")
+        return
+    
+    if unit == "minutes" and interval < 1:
+        await ctx.send("❌ Para 'minutes', el intervalo mínimo es 1 minuto.")
+        return
+    if unit == "hours" and interval < 1:
+        await ctx.send("❌ Para 'hours', el intervalo mínimo es 1 hora.")
+        return
+    if unit == "days" and interval < 1:
+        await ctx.send("❌ Para 'days', el intervalo mínimo es 1 día.")
+        return
+
+    config = {"interval": interval, "unit": unit}
+    save_config(config)
+    
+    # Reiniciar la tarea con el nuevo intervalo
+    send_random_video.cancel()  # Detener la tarea actual
+    send_random_video.change_interval(seconds=get_interval_in_seconds(interval, unit))
+    send_random_video.start()  # Reiniciar la tarea con el nuevo intervalo
+    
+    await ctx.send(f"✅ Intervalo de envío automático configurado a {interval} {unit}.")
+    print(f"[configure_interval] Intervalo configurado: {interval} {unit}")
+
+# Comando slash para configurar el intervalo
+@bot.tree.command(name="configurar_intervalo", description="Configura el intervalo de envío automático de videos")
+async def slash_configure_interval(interaction: discord.Interaction, interval: int, unit: str):
+    global config
+    unit = unit.lower()
+    if unit not in ["minutes", "hours", "days"]:
+        await interaction.response.send_message("❌ Unidad de tiempo no válida. Usa 'minutes', 'hours' o 'days'.", ephemeral=True)
+        return
+    
+    if interval <= 0:
+        await interaction.response.send_message("❌ El intervalo debe ser un número mayor que 0.", ephemeral=True)
+        return
+    
+    if unit == "minutes" and interval < 1:
+        await interaction.response.send_message("❌ Para 'minutes', el intervalo mínimo es 1 minuto.", ephemeral=True)
+        return
+    if unit == "hours" and interval < 1:
+        await interaction.response.send_message("❌ Para 'hours', el intervalo mínimo es 1 hora.", ephemeral=True)
+        return
+    if unit == "days" and interval < 1:
+        await interaction.response.send_message("❌ Para 'days', el intervalo mínimo es 1 día.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+    config = {"interval": interval, "unit": unit}
+    save_config(config)
+    
+    # Reiniciar la tarea con el nuevo intervalo
+    send_random_video.cancel()
+    send_random_video.change_interval(seconds=get_interval_in_seconds(interval, unit))
+    send_random_video.start()
+    
+    await interaction.followup.send(f"✅ Intervalo de envío automático configurado a {interval} {unit}.")
+    print(f"[slash_configure_interval] Intervalo configurado: {interval} {unit}")
+
 # Comando para asignar temas (hashtags)
 @bot.command(name='asignar_tema')
 async def assign_theme(ctx, *args):
@@ -492,6 +610,7 @@ async def slash_view_themes(interaction: discord.Interaction):
 
 @bot.tree.command(name="ayuda", description="Muestra la lista de comandos disponibles")
 async def slash_help_command(interaction: discord.Interaction):
+    global config
     embed = discord.Embed(
         title="📱 Ayuda del Bot Brainrot",
         description="Aquí encontrarás todos los comandos disponibles para interactuar con el bot.",
@@ -525,6 +644,15 @@ async def slash_help_command(interaction: discord.Interaction):
         inline=False
     )
     embed.add_field(
+        name="⏰ Configuración de Intervalo",
+        value=(
+            "**`/configurar_intervalo`** o **`_configurar_intervalo`**\n"
+            "➡️ Configura el intervalo de tiempo para el envío automático de Reels.\n"
+            "➡️ Ejemplo: `/configurar_intervalo interval:30 unit:minutes` o `_configurar_intervalo 30 minutes`"
+        ),
+        inline=False
+    )
+    embed.add_field(
         name="🧹 Limpiar Caché",
         value=(
             "**`/limpiar_cache`** o **`_limpiar_cache`**\n"
@@ -546,7 +674,7 @@ async def slash_help_command(interaction: discord.Interaction):
             "• Puedes usar comandos con barra diagonal (`/`) o con prefijo (`_`).\n"
             "• Los temas asignados se guardan automáticamente.\n"
             "• Los Reels se reproducen directamente en Discord usando un enlace embed.\n"
-            "• El bot envía un Reel automático cada 5 minutos al canal configurado."
+            f"• El bot envía un Reel automático cada {config['interval']} {config['unit']} al canal configurado."
         ),
         inline=False
     )
@@ -794,8 +922,8 @@ async def prefix_video_directo(ctx, url: str):
         await ctx.send(f"❌ Error: {error_msg}")
         print(f"[_video_directo] Error: {error_msg}")
 
-# Tarea periódica para enviar videos aleatorios (cada 5 minutos)
-@tasks.loop(minutes=5)
+# Tarea periódica para enviar videos aleatorios (intervalo dinámico)
+@tasks.loop(seconds=get_interval_in_seconds(config["interval"], config["unit"]))
 async def send_random_video():
     global themes, instagram_connected, channel_id, recently_sent_videos
     
