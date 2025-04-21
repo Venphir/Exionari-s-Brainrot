@@ -86,6 +86,9 @@ except ValueError:
 # Estrategia para evitar comandos duplicados
 message_timestamps = {}
 
+# Lista para almacenar los últimos videos enviados (para evitar repeticiones)
+recently_sent_videos = []
+
 # Cargar credenciales de Instagram
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
@@ -109,11 +112,11 @@ if not BOT_TOKEN:
 def transform_to_embedez_url(instagram_url):
     """Transforma un enlace de Instagram a un enlace de instagramez.com."""
     if "instagram.com/reel/" not in instagram_url:
-        return instagram_url  # Si no es un enlace de Reel, devolver el original
-    # Extraer el código del Reel (por ejemplo, ABC123)
+        print(f"[transform_to_embedez_url] URL inválida, no es un enlace de Instagram Reel: {instagram_url}")
+        return None
     reel_code = instagram_url.split("reel/")[1].rstrip("/")
-    # Construir el nuevo enlace
     embedez_url = f"https://www.instagramez.com/reel/{reel_code}/"
+    print(f"[transform_to_embedez_url] URL transformada: {embedez_url}")
     return embedez_url
 
 # Evento cuando el bot está listo
@@ -139,6 +142,7 @@ async def on_ready():
         
         send_random_video.start()
         clean_timestamps.start()
+        clean_recent_videos.start()
         
         bot.loop.create_task(connect_to_instagram())
         
@@ -226,6 +230,9 @@ load_themes()
 # Función para validar si un enlace de Instagram es accesible
 async def is_valid_instagram_url(url):
     """Verifica si un enlace de Instagram es válido y accesible."""
+    if "instagram.com" not in url:
+        print(f"[is_valid_instagram_url] URL no pertenece a Instagram: {url}")
+        return False
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -237,82 +244,150 @@ async def is_valid_instagram_url(url):
             response = http_requests.get(url, headers=headers, timeout=5, allow_redirects=True, stream=True)
         if response.status_code == 200:
             if "This post is not available" in response.text or "post unavailable" in response.text.lower():
+                print(f"[is_valid_instagram_url] Reel no disponible: {url}")
                 return False
+            print(f"[is_valid_instagram_url] URL válida: {url}")
             return True
+        print(f"[is_valid_instagram_url] Código de estado no válido ({response.status_code}): {url}")
         return False
-    except (http_requests.exceptions.RequestException, http_requests.exceptions.Timeout):
+    except (http_requests.exceptions.RequestException, http_requests.exceptions.Timeout) as e:
+        print(f"[is_valid_instagram_url] Error al verificar URL: {url}, Error: {e}")
         return False
 
 # Función para buscar Instagram Reels por hashtag
-async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True):
+async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True, force_refresh=False):
     global theme_video_registry
-    print(f"Buscando Instagram Reels para hashtag: {hashtag}")
+    print(f"[get_instagram_reels_by_hashtag] Buscando Instagram Reels para hashtag: {hashtag}")
     hashtag_clean = hashtag.lstrip('#').lower()
     videos_info = []
 
-    if use_cache and hashtag_clean in theme_video_registry:
+    # 1. Intentar usar el caché, pero solo si no se fuerza una actualización
+    if use_cache and hashtag_clean in theme_video_registry and not force_refresh:
         cached_videos = theme_video_registry.get(hashtag_clean, [])
+        print(f"[get_instagram_reels_by_hashtag] Encontrados {len(cached_videos)} videos en caché para {hashtag_clean}")
         valid_videos = []
         for video in cached_videos:
+            if "instagram.com" not in video['url']:
+                print(f"[get_instagram_reels_by_hashtag] Eliminando URL no válida del caché (no es de Instagram): {video['url']}")
+                continue
             if await is_valid_instagram_url(video['url']):
                 valid_videos.append(video)
             else:
-                print(f"Enlace no válido eliminado del caché: {video['url']}")
+                print(f"[get_instagram_reels_by_hashtag] Enlace no válido eliminado del caché: {video['url']}")
+        
+        # Mezclar los videos del caché para mayor variedad
         if valid_videos:
-            print(f"Usando videos en caché para {hashtag_clean}, {len(valid_videos)} disponibles")
             random.shuffle(valid_videos)
             videos_info = valid_videos[:count]
             theme_video_registry[hashtag_clean] = valid_videos
             try:
                 with open(THEME_VIDEO_REGISTRY, "wb") as f:
                     pickle.dump(theme_video_registry, f)
-                print(f"Caché actualizado para '{hashtag_clean}' con {len(valid_videos)} videos válidos")
+                print(f"[get_instagram_reels_by_hashtag] Caché actualizado para '{hashtag_clean}' con {len(valid_videos)} videos válidos")
             except Exception as e:
-                print(f"Error al actualizar caché: {e}")
+                print(f"[get_instagram_reels_by_hashtag] Error al actualizar caché: {e}")
 
-    if len(videos_info) < count:
+    # 2. Si no hay suficientes videos en caché o se fuerza una actualización, buscar nuevos
+    if len(videos_info) < count or force_refresh:
+        print(f"[get_instagram_reels_by_hashtag] Buscando nuevos Reels en Instagram para {hashtag_clean}")
         try:
+            # Verificar si la sesión de Instagram sigue siendo válida
+            try:
+                ig_client.get_timeline_feed()
+            except Exception as e:
+                print(f"[get_instagram_reels_by_hashtag] Sesión de Instagram inválida: {e}. Intentando reconectar...")
+                login_with_session()
+
             hashtag_data = ig_client.hashtag_info(hashtag_clean)
             if not hashtag_data:
-                print(f"No se encontró el hashtag: {hashtag_clean}")
+                print(f"[get_instagram_reels_by_hashtag] No se encontró el hashtag: {hashtag_clean}")
                 return videos_info
 
-            medias = ig_client.hashtag_medias_recent(hashtag_clean, amount=count * 2)
+            # Buscar más videos para tener mayor variedad (aumentamos amount)
+            medias = ig_client.hashtag_medias_recent(hashtag_clean, amount=20)  # Aumentado de count * 2 a 20
+            print(f"[get_instagram_reels_by_hashtag] Encontrados {len(medias)} medios recientes para {hashtag_clean}")
             temp_videos = []
             for media in medias:
-                if media.media_type == 2:
+                if media.media_type == 2:  # 2 indica un video (Reel)
                     video_url = f"https://www.instagram.com/reel/{media.code}/"
+                    print(f"[get_instagram_reels_by_hashtag] Reel encontrado: {video_url}")
                     temp_videos.append({
                         'id': media.pk,
                         'url': video_url,
                         'title': media.caption_text[:100] if media.caption_text else f'Reel de {media.user.username}',
                         'uploader': media.user.username
                     })
-
-            for video in temp_videos:
-                if len(videos_info) >= count:
-                    break
-                if await is_valid_instagram_url(video['url']):
-                    videos_info.append(video)
-                    print(f"Enlace válido añadido: {video['url']}")
                 else:
-                    print(f"Enlace no válido descartado: {video['url']}")
+                    print(f"[get_instagram_reels_by_hashtag] Medio ignorado (no es un Reel): {media.pk}")
 
-            if videos_info and use_cache:
-                existing_videos = theme_video_registry.get(hashtag_clean, [])
-                all_videos = videos_info + [v for v in existing_videos if v not in videos_info]
-                theme_video_registry[hashtag_clean] = all_videos
+            new_videos = []
+            for video in temp_videos:
+                if await is_valid_instagram_url(video['url']):
+                    new_videos.append(video)
+                    print(f"[get_instagram_reels_by_hashtag] Enlace válido añadido: {video['url']}")
+                else:
+                    print(f"[get_instagram_reels_by_hashtag] Enlace no válido descartado: {video['url']}")
+
+            # Combinar los nuevos videos con los del caché (si no se fuerza una actualización)
+            if not force_refresh and hashtag_clean in theme_video_registry:
+                existing_videos = theme_video_registry[hashtag_clean]
+                all_videos = new_videos + [v for v in existing_videos if v not in new_videos]
+            else:
+                all_videos = new_videos
+
+            # Mezclar todos los videos para mayor variedad
+            random.shuffle(all_videos)
+            videos_info = all_videos[:count]
+
+            # Actualizar el caché con todos los videos disponibles (limitamos a 50 para no sobrecargar)
+            if all_videos and use_cache:
+                theme_video_registry[hashtag_clean] = all_videos[:50]
                 try:
                     with open(THEME_VIDEO_REGISTRY, "wb") as f:
                         pickle.dump(theme_video_registry, f)
-                    print(f"Reels para '{hashtag_clean}' agregados a caché: {len(videos_info)}")
+                    print(f"[get_instagram_reels_by_hashtag] Reels para '{hashtag_clean}' agregados a caché: {len(all_videos)}")
                 except Exception as e:
-                    print(f"Error al guardar caché de videos: {e}")
+                    print(f"[get_instagram_reels_by_hashtag] Error al guardar caché de videos: {e}")
         except Exception as e:
-            print(f"Error al buscar Instagram Reels: {e}")
+            print(f"[get_instagram_reels_by_hashtag] Error al buscar Instagram Reels: {e}")
             traceback.print_exc()
 
+    print(f"[get_instagram_reels_by_hashtag] Total de videos devueltos: {len(videos_info)}")
     return videos_info[:count]
+
+# Comando para limpiar el caché
+@bot.command(name='limpiar_cache')
+async def clear_cache(ctx):
+    global theme_video_registry
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    try:
+        theme_video_registry = {}
+        if os.path.exists(THEME_VIDEO_REGISTRY):
+            os.remove(THEME_VIDEO_REGISTRY)
+        await ctx.send("✅ Caché de videos limpiado correctamente.")
+        print("[clear_cache] Caché limpiado por el usuario.")
+    except Exception as e:
+        await ctx.send(f"❌ Error al limpiar el caché: {str(e)}")
+        print(f"[clear_cache] Error al limpiar el caché: {e}")
+
+# Comando slash para limpiar el caché
+@bot.tree.command(name="limpiar_cache", description="Limpia el caché de videos almacenados")
+async def slash_clear_cache(interaction: discord.Interaction):
+    global theme_video_registry
+    await interaction.response.defer(ephemeral=False)
+    try:
+        theme_video_registry = {}
+        if os.path.exists(THEME_VIDEO_REGISTRY):
+            os.remove(THEME_VIDEO_REGISTRY)
+        await interaction.followup.send("✅ Caché de videos limpiado correctamente.")
+        print("[slash_clear_cache] Caché limpiado por el usuario.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error al limpiar el caché: {str(e)}")
+        print(f"[slash_clear_cache] Error al limpiar el caché: {e}")
 
 # Comando para asignar temas (hashtags)
 @bot.command(name='asignar_tema')
@@ -450,6 +525,14 @@ async def slash_help_command(interaction: discord.Interaction):
         inline=False
     )
     embed.add_field(
+        name="🧹 Limpiar Caché",
+        value=(
+            "**`/limpiar_cache`** o **`_limpiar_cache`**\n"
+            "➡️ Limpia el caché de videos almacenados para buscar nuevos Reels."
+        ),
+        inline=False
+    )
+    embed.add_field(
         name="❓ Ayuda",
         value=(
             "**`/ayuda`** o **`_ayuda`**\n"
@@ -473,7 +556,7 @@ async def slash_help_command(interaction: discord.Interaction):
 # Comando con prefijo para enviar un video
 @bot.command(name='enviar_video')
 async def prefix_send_video(ctx):
-    global themes, instagram_connected
+    global themes, instagram_connected, recently_sent_videos
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
@@ -493,21 +576,43 @@ async def prefix_send_video(ctx):
         print(f"[_enviar_video] Tema seleccionado: {theme}")
         
         await loading_msg.edit(content=f"🔍 Buscando Reels para **{theme}**... Por favor espera.")
-        videos = await get_instagram_reels_by_hashtag(theme, count=5)
+        # Forzar una actualización del caché cada 5 ejecuciones para mayor variedad
+        force_refresh = random.random() < 0.2  # 20% de probabilidad de forzar una actualización
+        videos = await get_instagram_reels_by_hashtag(theme, count=10, force_refresh=force_refresh)
         
         if not videos:
-            await ctx.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema.")
+            await ctx.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema o limpia el caché con `_limpiar_cache`.")
             try:
                 await loading_msg.delete()
             except:
                 pass
             return
-            
-        video_info = random.choice(videos)
+        
+        # Filtrar videos que no hayan sido enviados recientemente
+        available_videos = [video for video in videos if video['url'] not in recently_sent_videos]
+        if not available_videos:
+            # Si todos los videos ya fueron enviados, reiniciar la lista de videos recientes
+            recently_sent_videos.clear()
+            available_videos = videos
+        
+        # Seleccionar un video aleatorio de los disponibles
+        video_info = random.choice(available_videos)
         video_url = video_info['url']
+        
+        # Añadir el video a la lista de enviados recientemente (máximo 10 videos)
+        recently_sent_videos.append(video_url)
+        if len(recently_sent_videos) > 10:
+            recently_sent_videos.pop(0)
         
         # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(video_url)
+        if not embedez_url:
+            await ctx.send(f"❌ Error: No se pudo transformar el enlace del Reel: {video_url}")
+            try:
+                await loading_msg.delete()
+            except:
+                pass
+            return
         
         # Enviar el video con el enlace transformado
         content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{embedez_url}"
@@ -521,13 +626,13 @@ async def prefix_send_video(ctx):
     except Exception as e:
         error_msg = str(e)
         await ctx.send(f"❌ Error al obtener el Reel: {error_msg}")
-        print(f"Error en _enviar_video: {error_msg}")
+        print(f"[_enviar_video] Error: {error_msg}")
         traceback.print_exc()
 
 # Comando slash para enviar un video
 @bot.tree.command(name="enviar_video", description="Envía un Instagram Reel aleatorio basado en los temas asignados")
 async def slash_send_video(interaction: discord.Interaction):
-    global themes, instagram_connected
+    global themes, instagram_connected, recently_sent_videos
     
     if not themes:
         await interaction.response.send_message("No hay temas asignados. Usa `/asignar_tema` para añadir algunos.", ephemeral=True)
@@ -544,17 +649,43 @@ async def slash_send_video(interaction: discord.Interaction):
         print(f"[/enviar_video] Tema seleccionado: {theme}")
         
         searching_msg = await interaction.followup.send(f"🔍 Buscando Reels de **{theme}**... Por favor espera.")
-        videos = await get_instagram_reels_by_hashtag(theme, count=5)
+        # Forzar una actualización del caché cada 5 ejecuciones para mayor variedad
+        force_refresh = random.random() < 0.2  # 20% de probabilidad de forzar una actualización
+        videos = await get_instagram_reels_by_hashtag(theme, count=10, force_refresh=force_refresh)
         
         if not videos:
-            await interaction.followup.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema.")
+            await interaction.followup.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema o limpia el caché con `/limpiar_cache`.")
+            try:
+                await searching_msg.delete()
+            except:
+                pass
             return
-            
-        video_info = random.choice(videos)
+        
+        # Filtrar videos que no hayan sido enviados recientemente
+        available_videos = [video for video in videos if video['url'] not in recently_sent_videos]
+        if not available_videos:
+            # Si todos los videos ya fueron enviados, reiniciar la lista de videos recientes
+            recently_sent_videos.clear()
+            available_videos = videos
+        
+        # Seleccionar un video aleatorio de los disponibles
+        video_info = random.choice(available_videos)
         video_url = video_info['url']
+        
+        # Añadir el video a la lista de enviados recientemente (máximo 10 videos)
+        recently_sent_videos.append(video_url)
+        if len(recently_sent_videos) > 10:
+            recently_sent_videos.pop(0)
         
         # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(video_url)
+        if not embedez_url:
+            await interaction.followup.send(f"❌ Error: No se pudo transformar el enlace del Reel: {video_url}")
+            try:
+                await searching_msg.delete()
+            except:
+                pass
+            return
         
         # Enviar el video con el enlace transformado
         content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{embedez_url}"
@@ -568,7 +699,7 @@ async def slash_send_video(interaction: discord.Interaction):
     except Exception as e:
         error_msg = str(e)
         await interaction.followup.send(f"❌ Error al obtener el Reel: {error_msg}")
-        print(f"Error en /enviar_video: {error_msg}")
+        print(f"[/enviar_video] Error: {error_msg}")
         traceback.print_exc()
 
 # Comando para enviar un Reel específico
@@ -594,6 +725,13 @@ async def video_directo(interaction: discord.Interaction, url: str):
             
         # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(url)
+        if not embedez_url:
+            await interaction.followup.send(f"❌ Error: No se pudo transformar el enlace del Reel: {url}")
+            try:
+                await searching_msg.delete()
+            except:
+                pass
+            return
         
         # Enviar el video con el enlace transformado
         await interaction.followup.send(f"📱 Aquí tienes tu Reel de Instagram:\n{embedez_url}")
@@ -606,7 +744,7 @@ async def video_directo(interaction: discord.Interaction, url: str):
     except Exception as e:
         error_msg = str(e)
         await interaction.followup.send(f"❌ Error al procesar el Reel: {error_msg}")
-        print(f"Error en video_directo: {error_msg}")
+        print(f"[video_directo] Error: {error_msg}")
 
 # Comando con prefijo para enviar un Reel específico
 @bot.command(name='video_directo')
@@ -634,6 +772,13 @@ async def prefix_video_directo(ctx, url: str):
                 
         # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(url)
+        if not embedez_url:
+            await ctx.send(f"❌ Error: No se pudo transformar el enlace del Reel: {url}")
+            try:
+                await loading_msg.delete()
+            except:
+                pass
+            return
         
         # Enviar el video con el enlace transformado
         await ctx.send(f"📱 Aquí tienes tu Reel de Instagram:\n{embedez_url}")
@@ -646,43 +791,56 @@ async def prefix_video_directo(ctx, url: str):
     except Exception as e:
         error_msg = str(e)
         await ctx.send(f"❌ Error: {error_msg}")
-        print(f"Error en _video_directo: {error_msg}")
+        print(f"[_video_directo] Error: {error_msg}")
 
 # Tarea periódica para enviar videos aleatorios
 @tasks.loop(hours=12)
 async def send_random_video():
-    global themes, instagram_connected, channel_id
+    global themes, instagram_connected, channel_id, recently_sent_videos
     
     if not themes or not instagram_connected or not channel_id:
-        print("No se puede ejecutar la tarea automática: faltan temas, conexión a Instagram o ID del canal.")
+        print("[send_random_video] No se puede ejecutar la tarea automática: faltan temas, conexión a Instagram o ID del canal.")
         return
         
     try:
         channel = bot.get_channel(channel_id)
         if not channel:
-            print(f"No se pudo encontrar el canal con ID {channel_id}")
+            print(f"[send_random_video] No se pudo encontrar el canal con ID {channel_id}")
             return
             
         theme = random.choice(themes)
-        print(f"[Tarea automática] Tema seleccionado: {theme}")
+        print(f"[send_random_video] Tema seleccionado: {theme}")
         
-        videos = await get_instagram_reels_by_hashtag(theme, count=5)
+        videos = await get_instagram_reels_by_hashtag(theme, count=10, force_refresh=True)
         if not videos:
-            print(f"No se encontraron Reels para el tema: {theme}")
+            print(f"[send_random_video] No se encontraron Reels para el tema: {theme}")
             return
-            
-        video_info = random.choice(videos)
+        
+        # Filtrar videos que no hayan sido enviados recientemente
+        available_videos = [video for video in videos if video['url'] not in recently_sent_videos]
+        if not available_videos:
+            recently_sent_videos.clear()
+            available_videos = videos
+        
+        video_info = random.choice(available_videos)
         video_url = video_info['url']
+        
+        recently_sent_videos.append(video_url)
+        if len(recently_sent_videos) > 10:
+            recently_sent_videos.pop(0)
         
         # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(video_url)
+        if not embedez_url:
+            print(f"[send_random_video] Error: No se pudo transformar el enlace del Reel: {video_url}")
+            return
         
         # Enviar el video con el enlace transformado
         await channel.send(f"📱 Reel automático de **{theme}**:\n{embedez_url}")
-        print(f"Reel enviado automáticamente para el tema: {theme}")
+        print(f"[send_random_video] Reel enviado automáticamente para el tema: {theme}")
         
     except Exception as e:
-        print(f"Error en la tarea automática: {e}")
+        print(f"[send_random_video] Error en la tarea automática: {e}")
         traceback.print_exc()
 
 # Tarea para limpiar mensajes temporales
@@ -692,6 +850,13 @@ async def clean_timestamps():
     for msg_id in list(message_timestamps.keys()):
         if now - message_timestamps[msg_id] > 600:
             del message_timestamps[msg_id]
+
+# Tarea para limpiar la lista de videos recientes
+@tasks.loop(hours=1)
+async def clean_recent_videos():
+    global recently_sent_videos
+    recently_sent_videos.clear()
+    print("[clean_recent_videos] Lista de videos recientes limpiada.")
 
 # Iniciar el bot
 if __name__ == "__main__":
