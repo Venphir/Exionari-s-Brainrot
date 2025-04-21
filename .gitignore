@@ -35,3 +35,9 @@ tmp/
 
 # Logs
 *.log
+
+# Directorios de caché
+video_cache/
+
+# Archivos de sesión
+video_cache/instagram_session.json
