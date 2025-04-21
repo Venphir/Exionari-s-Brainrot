@@ -303,8 +303,8 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True, force
                 print(f"[get_instagram_reels_by_hashtag] No se encontró el hashtag: {hashtag_clean}")
                 return videos_info
 
-            # Buscar más videos para tener mayor variedad (aumentamos amount)
-            medias = ig_client.hashtag_medias_recent(hashtag_clean, amount=20)  # Aumentado de count * 2 a 20
+            # Buscar más videos para tener mayor variedad
+            medias = ig_client.hashtag_medias_recent(hashtag_clean, amount=20)
             print(f"[get_instagram_reels_by_hashtag] Encontrados {len(medias)} medios recientes para {hashtag_clean}")
             temp_videos = []
             for media in medias:
@@ -545,7 +545,8 @@ async def slash_help_command(interaction: discord.Interaction):
         value=(
             "• Puedes usar comandos con barra diagonal (`/`) o con prefijo (`_`).\n"
             "• Los temas asignados se guardan automáticamente.\n"
-            "• Los Reels se reproducen directamente en Discord usando un enlace embed."
+            "• Los Reels se reproducen directamente en Discord usando un enlace embed.\n"
+            "• El bot envía un Reel automático cada 5 minutos al canal configurado."
         ),
         inline=False
     )
@@ -793,8 +794,8 @@ async def prefix_video_directo(ctx, url: str):
         await ctx.send(f"❌ Error: {error_msg}")
         print(f"[_video_directo] Error: {error_msg}")
 
-# Tarea periódica para enviar videos aleatorios
-@tasks.loop(hours=12)
+# Tarea periódica para enviar videos aleatorios (cada 5 minutos)
+@tasks.loop(minutes=5)
 async def send_random_video():
     global themes, instagram_connected, channel_id, recently_sent_videos
     
