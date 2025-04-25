@@ -67,24 +67,10 @@ intents.message_content = True
 # Configuración del bot de Discord
 bot = commands.Bot(command_prefix='_', intents=intents, help_command=None)
 
-# Ruta del archivo para almacenar los temas
+# Rutas de los archivos
 themes_file = "themes.json"
-
-# Ruta del archivo para almacenar la configuración del intervalo
 config_file = "config.json"
-
-# Configuración del canal desde el archivo .env
-try:
-    channel_id_str = os.getenv("DISCORD_CHANNEL_ID")
-    if not channel_id_str:
-        print("⚠️ ADVERTENCIA: ID del canal no encontrado en .env")
-        channel_id = None
-    else:
-        channel_id = int(channel_id_str)
-        print(f"Canal configurado: {channel_id}")
-except ValueError:
-    print(f"⚠️ ERROR: El ID del canal '{channel_id_str}' no es un número válido")
-    channel_id = None
+channels_file = "channels.json"
 
 # Estrategia para evitar comandos duplicados
 message_timestamps = {}
@@ -162,6 +148,33 @@ def get_interval_in_seconds(interval, unit):
     else:
         raise ValueError(f"Unidad de tiempo no válida: {unit}")
 
+# Función para cargar la lista de canales
+def load_channels():
+    if os.path.exists(channels_file):
+        try:
+            with open(channels_file, "r", encoding="utf-8") as f:
+                channels = json.load(f)
+                print(f"Canales cargados: {channels}")
+                return channels
+        except json.JSONDecodeError:
+            print("Error: El archivo channels.json está corrupto. Usando lista vacía.")
+            return []
+        except Exception as e:
+            print(f"Error al cargar los canales desde el archivo: {e}")
+            return []
+    else:
+        print("No se encontró channels.json. Usando lista vacía.")
+        return []
+
+# Función para guardar la lista de canales
+def save_channels(channels):
+    with open(channels_file, "w", encoding="utf-8") as f:
+        json.dump(channels, f, ensure_ascii=False, indent=4)
+    print("Canales guardados correctamente.")
+
+# Lista para almacenar los canales
+channels = load_channels()
+
 # Evento cuando el bot está listo
 @bot.event
 async def on_ready():
@@ -169,19 +182,6 @@ async def on_ready():
     try:
         await bot.tree.sync()
         print("Comandos de aplicación sincronizados.")
-        
-        global channel_id
-        if channel_id:
-            channel = bot.get_channel(channel_id)
-            if channel is None:
-                print("Error: No se pudo encontrar el canal. Verifica el ID del canal.")
-            else:
-                print(f"El bot tiene acceso al canal: {channel.name}")
-                permissions = channel.permissions_for(channel.guild.me)
-                if not permissions.send_messages:
-                    print("Error: El bot no tiene permisos para enviar mensajes en este canal.")
-                if not permissions.embed_links:
-                    print("Advertencia: El bot no tiene permisos para incluir enlaces embebidos.")
         
         # Iniciar las tareas
         send_random_video.start()
@@ -305,21 +305,19 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True, force
     hashtag_clean = hashtag.lstrip('#').lower()
     videos_info = []
 
-    # 1. Intentar usar el caché, pero solo si no se fuerza una actualización
     if use_cache and hashtag_clean in theme_video_registry and not force_refresh:
         cached_videos = theme_video_registry.get(hashtag_clean, [])
         print(f"[get_instagram_reels_by_hashtag] Encontrados {len(cached_videos)} videos en caché para {hashtag_clean}")
         valid_videos = []
         for video in cached_videos:
             if "instagram.com" not in video['url']:
-                print(f"[get_instagram_reels_by_hashtag] Eliminando URL no válida del caché (no es de Instagram): {video['url']}")
+                print(f"[get_instagram_reels_by_hashtag] Eliminando URL no válida del caché: {video['url']}")
                 continue
             if await is_valid_instagram_url(video['url']):
                 valid_videos.append(video)
             else:
                 print(f"[get_instagram_reels_by_hashtag] Enlace no válido eliminado del caché: {video['url']}")
         
-        # Mezclar los videos del caché para mayor variedad
         if valid_videos:
             random.shuffle(valid_videos)
             videos_info = valid_videos[:count]
@@ -327,19 +325,17 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True, force
             try:
                 with open(THEME_VIDEO_REGISTRY, "wb") as f:
                     pickle.dump(theme_video_registry, f)
-                print(f"[get_instagram_reels_by_hashtag] Caché actualizado para '{hashtag_clean}' con {len(valid_videos)} videos válidos")
+                print(f"[get_instagram_reels_by_hashtag] Caché actualizado para '{hashtag_clean}'")
             except Exception as e:
                 print(f"[get_instagram_reels_by_hashtag] Error al actualizar caché: {e}")
 
-    # 2. Si no hay suficientes videos en caché o se fuerza una actualización, buscar nuevos
     if len(videos_info) < count or force_refresh:
         print(f"[get_instagram_reels_by_hashtag] Buscando nuevos Reels en Instagram para {hashtag_clean}")
         try:
-            # Verificar si la sesión de Instagram sigue siendo válida
             try:
                 ig_client.get_timeline_feed()
             except Exception as e:
-                print(f"[get_instagram_reels_by_hashtag] Sesión de Instagram inválida: {e}. Intentando reconectar...")
+                print(f"[get_instagram_reels_by_hashtag] Sesión inválida: {e}. Reconectando...")
                 login_with_session()
 
             hashtag_data = ig_client.hashtag_info(hashtag_clean)
@@ -347,57 +343,140 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True, force
                 print(f"[get_instagram_reels_by_hashtag] No se encontró el hashtag: {hashtag_clean}")
                 return videos_info
 
-            # Buscar más videos para tener mayor variedad
             medias = ig_client.hashtag_medias_recent(hashtag_clean, amount=20)
             print(f"[get_instagram_reels_by_hashtag] Encontrados {len(medias)} medios recientes para {hashtag_clean}")
             temp_videos = []
             for media in medias:
                 if media.media_type == 2:  # 2 indica un video (Reel)
                     video_url = f"https://www.instagram.com/reel/{media.code}/"
-                    print(f"[get_instagram_reels_by_hashtag] Reel encontrado: {video_url}")
                     temp_videos.append({
                         'id': media.pk,
                         'url': video_url,
                         'title': media.caption_text[:100] if media.caption_text else f'Reel de {media.user.username}',
                         'uploader': media.user.username
                     })
-                else:
-                    print(f"[get_instagram_reels_by_hashtag] Medio ignorado (no es un Reel): {media.pk}")
 
             new_videos = []
             for video in temp_videos:
                 if await is_valid_instagram_url(video['url']):
                     new_videos.append(video)
-                    print(f"[get_instagram_reels_by_hashtag] Enlace válido añadido: {video['url']}")
-                else:
-                    print(f"[get_instagram_reels_by_hashtag] Enlace no válido descartado: {video['url']}")
 
-            # Combinar los nuevos videos con los del caché (si no se fuerza una actualización)
             if not force_refresh and hashtag_clean in theme_video_registry:
                 existing_videos = theme_video_registry[hashtag_clean]
                 all_videos = new_videos + [v for v in existing_videos if v not in new_videos]
             else:
                 all_videos = new_videos
 
-            # Mezclar todos los videos para mayor variedad
             random.shuffle(all_videos)
             videos_info = all_videos[:count]
 
-            # Actualizar el caché con todos los videos disponibles (limitamos a 50 para no sobrecargar)
             if all_videos and use_cache:
                 theme_video_registry[hashtag_clean] = all_videos[:50]
                 try:
                     with open(THEME_VIDEO_REGISTRY, "wb") as f:
                         pickle.dump(theme_video_registry, f)
-                    print(f"[get_instagram_reels_by_hashtag] Reels para '{hashtag_clean}' agregados a caché: {len(all_videos)}")
+                    print(f"[get_instagram_reels_by_hashtag] Reels para '{hashtag_clean}' agregados a caché")
                 except Exception as e:
-                    print(f"[get_instagram_reels_by_hashtag] Error al guardar caché de videos: {e}")
+                    print(f"[get_instagram_reels_by_hashtag] Error al guardar caché: {e}")
         except Exception as e:
-            print(f"[get_instagram_reels_by_hashtag] Error al buscar Instagram Reels: {e}")
+            print(f"[get_instagram_reels_by_hashtag] Error al buscar Reels: {e}")
             traceback.print_exc()
 
     print(f"[get_instagram_reels_by_hashtag] Total de videos devueltos: {len(videos_info)}")
     return videos_info[:count]
+
+# Comando para agregar un canal a la lista
+@bot.command(name='agregar_canal')
+async def add_channel(ctx, channel_id: int):
+    global channels
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        await ctx.send(f"❌ No se encontró el canal con ID {channel_id}.")
+        return
+    
+    if channel_id in channels:
+        await ctx.send(f"⚠️ El canal <#{channel_id}> ya está en la lista.")
+        return
+    
+    channels.append(channel_id)
+    save_channels(channels)
+    await ctx.send(f"✅ Canal <#{channel_id}> agregado a la lista de envío automático.")
+
+# Comando slash para agregar un canal
+@bot.tree.command(name="agregar_canal", description="Agrega un canal a la lista de envío automático de videos")
+async def slash_add_channel(interaction: discord.Interaction, channel_id: int):
+    global channels
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        await interaction.response.send_message(f"❌ No se encontró el canal con ID {channel_id}.", ephemeral=True)
+        return
+    
+    if channel_id in channels:
+        await interaction.response.send_message(f"⚠️ El canal <#{channel_id}> ya está en la lista.", ephemeral=True)
+        return
+    
+    channels.append(channel_id)
+    save_channels(channels)
+    await interaction.response.send_message(f"✅ Canal <#{channel_id}> agregado a la lista de envío automático.")
+
+# Comando para eliminar un canal de la lista
+@bot.command(name='eliminar_canal')
+async def remove_channel(ctx, channel_id: int):
+    global channels
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    if channel_id not in channels:
+        await ctx.send(f"❌ El canal <#{channel_id}> no está en la lista.")
+        return
+    
+    channels.remove(channel_id)
+    save_channels(channels)
+    await ctx.send(f"✅ Canal <#{channel_id}> eliminado de la lista de envío automático.")
+
+# Comando slash para eliminar un canal
+@bot.tree.command(name="eliminar_canal", description="Elimina un canal de la lista de envío automático de videos")
+async def slash_remove_channel(interaction: discord.Interaction, channel_id: int):
+    global channels
+    if channel_id not in channels:
+        await interaction.response.send_message(f"❌ El canal <#{channel_id}> no está en la lista.", ephemeral=True)
+        return
+    
+    channels.remove(channel_id)
+    save_channels(channels)
+    await interaction.response.send_message(f"✅ Canal <#{channel_id}> eliminado de la lista de envío automático.")
+
+# Comando para ver la lista de canales
+@bot.command(name='ver_canales')
+async def view_channels(ctx):
+    global channels
+    now = time.time()
+    if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
+        return
+    message_timestamps[ctx.message.id] = now
+    
+    if not channels:
+        await ctx.send("📋 No hay canales asignados para envío automático.")
+    else:
+        channel_mentions = ', '.join([f"<#{channel_id}>" for channel_id in channels])
+        await ctx.send(f"📋 Canales para envío automático: {channel_mentions}")
+
+# Comando slash para ver la lista de canales
+@bot.tree.command(name="ver_canales", description="Muestra la lista de canales para envío automático de videos")
+async def slash_view_channels(interaction: discord.Interaction):
+    global channels
+    if not channels:
+        await interaction.response.send_message("📋 No hay canales asignados para envío automático.", ephemeral=True)
+    else:
+        channel_mentions = ', '.join([f"<#{channel_id}>" for channel_id in channels])
+        await interaction.response.send_message(f"📋 Canales para envío automático: {channel_mentions}")
 
 # Comando para limpiar el caché
 @bot.command(name='limpiar_cache')
@@ -464,10 +543,9 @@ async def configure_interval(ctx, interval: int, unit: str):
     config = {"interval": interval, "unit": unit}
     save_config(config)
     
-    # Reiniciar la tarea con el nuevo intervalo
-    send_random_video.cancel()  # Detener la tarea actual
+    send_random_video.cancel()
     send_random_video.change_interval(seconds=get_interval_in_seconds(interval, unit))
-    send_random_video.start()  # Reiniciar la tarea con el nuevo intervalo
+    send_random_video.start()
     
     await ctx.send(f"✅ Intervalo de envío automático configurado a {interval} {unit}.")
     print(f"[configure_interval] Intervalo configurado: {interval} {unit}")
@@ -499,7 +577,6 @@ async def slash_configure_interval(interaction: discord.Interaction, interval: i
     config = {"interval": interval, "unit": unit}
     save_config(config)
     
-    # Reiniciar la tarea con el nuevo intervalo
     send_random_video.cancel()
     send_random_video.change_interval(seconds=get_interval_in_seconds(interval, unit))
     send_random_video.start()
@@ -517,7 +594,7 @@ async def assign_theme(ctx, *args):
     message_timestamps[ctx.message.id] = now
     new_themes = list(set(filter(None, args)))
     if not new_themes:
-        await ctx.send("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.")
+        await ctx.send("Por favor, proporciona al menos un tema válido.")
         return
     already_added = [theme for theme in new_themes if theme in themes]
     new_to_add = [theme for theme in new_themes if theme not in themes]
@@ -570,7 +647,7 @@ async def slash_assign_theme(interaction: discord.Interaction, temas: str):
     args = temas.split()
     new_themes = list(set(filter(None, args)))
     if not new_themes:
-        await interaction.response.send_message("Por favor, proporciona al menos un tema válido. Los temas vacíos no son permitidos.", ephemeral=True)
+        await interaction.response.send_message("Por favor, proporciona al menos un tema válido.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=False)
     already_added = [theme for theme in new_themes if theme in themes]
@@ -635,8 +712,7 @@ async def slash_help_command(interaction: discord.Interaction):
         name="🎬 Instagram Reels",
         value=(
             "**`/enviar_video`** o **`_enviar_video`**\n"
-            "➡️ Envía un Instagram Reel aleatorio basado en los temas asignados.\n"
-            "➡️ El comando slash aparece en el menú al escribir `/`\n\n"
+            "➡️ Envía un Instagram Reel aleatorio basado en los temas asignados.\n\n"
             "**`/video_directo`** o **`_video_directo`**\n"
             "➡️ Envía un Reel específico dado su URL de Instagram.\n"
             "➡️ Ejemplo: `/video_directo url:https://www.instagram.com/reel/ABC123/`"
@@ -644,11 +720,25 @@ async def slash_help_command(interaction: discord.Interaction):
         inline=False
     )
     embed.add_field(
+        name="📺 Gestión de Canales",
+        value=(
+            "**`/agregar_canal`** o **`_agregar_canal`**\n"
+            "➡️ Agrega un canal a la lista de envío automático.\n"
+            "➡️ Ejemplo: `/agregar_canal channel_id:123456789` o `_agregar_canal 123456789`\n\n"
+            "**`/eliminar_canal`** o **`_eliminar_canal`**\n"
+            "➡️ Elimina un canal de la lista de envío automático.\n"
+            "➡️ Ejemplo: `/eliminar_canal channel_id:123456789` o `_eliminar_canal 123456789`\n\n"
+            "**`/ver_canales`** o **`_ver_canales`**\n"
+            "➡️ Muestra la lista de canales para envío automático."
+        ),
+        inline=False
+    )
+    embed.add_field(
         name="⏰ Configuración de Intervalo",
         value=(
             "**`/configurar_intervalo`** o **`_configurar_intervalo`**\n"
-            "➡️ Configura el intervalo de tiempo para el envío automático de Reels.\n"
-            "➡️ Ejemplo: `/configurar_intervalo interval:30 unit:minutes` o `_configurar_intervalo 30 minutes`"
+            "➡️ Configura el intervalo de tiempo para el envío automático.\n"
+            "➡️ Ejemplo: `/configurar_intervalo interval:30 unit:minutes`"
         ),
         inline=False
     )
@@ -656,7 +746,7 @@ async def slash_help_command(interaction: discord.Interaction):
         name="🧹 Limpiar Caché",
         value=(
             "**`/limpiar_cache`** o **`_limpiar_cache`**\n"
-            "➡️ Limpia el caché de videos almacenados para buscar nuevos Reels."
+            "➡️ Limpia el caché de videos almacenados."
         ),
         inline=False
     )
@@ -671,10 +761,9 @@ async def slash_help_command(interaction: discord.Interaction):
     embed.add_field(
         name="📝 Notas",
         value=(
-            "• Puedes usar comandos con barra diagonal (`/`) o con prefijo (`_`).\n"
-            "• Los temas asignados se guardan automáticamente.\n"
-            "• Los Reels se reproducen directamente en Discord usando un enlace embed.\n"
-            f"• El bot envía un Reel automático cada {config['interval']} {config['unit']} al canal configurado."
+            "• Usa comandos con `/` o con prefijo `_`.\n"
+            "• Los temas y canales se guardan automáticamente.\n"
+            "• Los Reels se envían cada " + f"{config['interval']} {config['unit']} a los canales configurados."
         ),
         inline=False
     )
@@ -696,61 +785,44 @@ async def prefix_send_video(ctx):
         return
     
     if not instagram_connected:
-        await ctx.send("⌛ La conexión con Instagram aún está en proceso. Por favor espera unos segundos e intenta nuevamente.")
+        await ctx.send("⌛ Conexión con Instagram en proceso. Espera unos segundos.")
         return
     
-    loading_msg = await ctx.send("🔍 Buscando un Reel aleatorio... Por favor espera.")
+    loading_msg = await ctx.send("🔍 Buscando un Reel aleatorio...")
     try:
         theme = random.choice(themes)
         print(f"[_enviar_video] Tema seleccionado: {theme}")
         
-        await loading_msg.edit(content=f"🔍 Buscando Reels para **{theme}**... Por favor espera.")
-        # Forzar una actualización del caché cada 5 ejecuciones para mayor variedad
-        force_refresh = random.random() < 0.2  # 20% de probabilidad de forzar una actualización
+        await loading_msg.edit(content=f"🔍 Buscando Reels para **{theme}**...")
+        force_refresh = random.random() < 0.2
         videos = await get_instagram_reels_by_hashtag(theme, count=10, force_refresh=force_refresh)
         
         if not videos:
-            await ctx.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema o limpia el caché con `_limpiar_cache`.")
-            try:
-                await loading_msg.delete()
-            except:
-                pass
+            await ctx.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema o usa `_limpiar_cache`.")
+            await loading_msg.delete()
             return
         
-        # Filtrar videos que no hayan sido enviados recientemente
         available_videos = [video for video in videos if video['url'] not in recently_sent_videos]
         if not available_videos:
-            # Si todos los videos ya fueron enviados, reiniciar la lista de videos recientes
             recently_sent_videos.clear()
             available_videos = videos
         
-        # Seleccionar un video aleatorio de los disponibles
         video_info = random.choice(available_videos)
         video_url = video_info['url']
         
-        # Añadir el video a la lista de enviados recientemente (máximo 10 videos)
         recently_sent_videos.append(video_url)
         if len(recently_sent_videos) > 10:
             recently_sent_videos.pop(0)
         
-        # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(video_url)
         if not embedez_url:
             await ctx.send(f"❌ Error: No se pudo transformar el enlace del Reel: {video_url}")
-            try:
-                await loading_msg.delete()
-            except:
-                pass
+            await loading_msg.delete()
             return
         
-        # Enviar el video con el enlace transformado
         content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{embedez_url}"
         await ctx.send(content=content_msg)
-        
-        try:
-            await loading_msg.delete()
-        except:
-            pass
+        await loading_msg.delete()
             
     except Exception as e:
         error_msg = str(e)
@@ -764,11 +836,11 @@ async def slash_send_video(interaction: discord.Interaction):
     global themes, instagram_connected, recently_sent_videos
     
     if not themes:
-        await interaction.response.send_message("No hay temas asignados. Usa `/asignar_tema` para añadir algunos.", ephemeral=True)
+        await interaction.response.send_message("No hay temas asignados. Usa `/asignar_tema`.", ephemeral=True)
         return
     
     if not instagram_connected:
-        await interaction.response.send_message("⌛ La conexión con Instagram aún está en proceso. Por favor espera unos segundos e intenta nuevamente.", ephemeral=True)
+        await interaction.response.send_message("⌛ Conexión con Instagram en proceso. Espera unos segundos.", ephemeral=True)
         return
     
     await interaction.response.defer(thinking=True)
@@ -777,53 +849,36 @@ async def slash_send_video(interaction: discord.Interaction):
         theme = random.choice(themes)
         print(f"[/enviar_video] Tema seleccionado: {theme}")
         
-        searching_msg = await interaction.followup.send(f"🔍 Buscando Reels de **{theme}**... Por favor espera.")
-        # Forzar una actualización del caché cada 5 ejecuciones para mayor variedad
-        force_refresh = random.random() < 0.2  # 20% de probabilidad de forzar una actualización
+        searching_msg = await interaction.followup.send(f"🔍 Buscando Reels de **{theme}**...")
+        force_refresh = random.random() < 0.2
         videos = await get_instagram_reels_by_hashtag(theme, count=10, force_refresh=force_refresh)
         
         if not videos:
-            await interaction.followup.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Intenta con otro tema o limpia el caché con `/limpiar_cache`.")
-            try:
-                await searching_msg.delete()
-            except:
-                pass
+            await interaction.followup.send(f"⚠️ No se encontraron Reels para el tema: **{theme}**. Usa `/limpiar_cache` si persiste.")
+            await searching_msg.delete()
             return
         
-        # Filtrar videos que no hayan sido enviados recientemente
         available_videos = [video for video in videos if video['url'] not in recently_sent_videos]
         if not available_videos:
-            # Si todos los videos ya fueron enviados, reiniciar la lista de videos recientes
             recently_sent_videos.clear()
             available_videos = videos
         
-        # Seleccionar un video aleatorio de los disponibles
         video_info = random.choice(available_videos)
         video_url = video_info['url']
         
-        # Añadir el video a la lista de enviados recientemente (máximo 10 videos)
         recently_sent_videos.append(video_url)
         if len(recently_sent_videos) > 10:
             recently_sent_videos.pop(0)
         
-        # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(video_url)
         if not embedez_url:
-            await interaction.followup.send(f"❌ Error: No se pudo transformar el enlace del Reel: {video_url}")
-            try:
-                await searching_msg.delete()
-            except:
-                pass
+            await interaction.followup.send(f"❌ Error: No se pudo transformar el enlace: {video_url}")
+            await searching_msg.delete()
             return
         
-        # Enviar el video con el enlace transformado
         content_msg = f"📱 Aquí tienes un Instagram Reel de **{theme}**:\n{embedez_url}"
         await interaction.followup.send(content=content_msg)
-        
-        try:
-            await searching_msg.delete()
-        except:
-            pass
+        await searching_msg.delete()
             
     except Exception as e:
         error_msg = str(e)
@@ -835,40 +890,27 @@ async def slash_send_video(interaction: discord.Interaction):
 @bot.tree.command(name="video_directo", description="Envía un Reel específico dado su URL de Instagram")
 async def video_directo(interaction: discord.Interaction, url: str):
     if 'instagram.com' not in url:
-        await interaction.response.send_message("❌ Por favor proporciona una URL válida de Instagram Reels.", ephemeral=True)
+        await interaction.response.send_message("❌ Proporciona una URL válida de Instagram Reels.", ephemeral=True)
         return
         
     await interaction.response.defer(thinking=True)
     
     try:
-        searching_msg = await interaction.followup.send("⬇️ Verificando enlace... Por favor espera.")
-        
+        searching_msg = await interaction.followup.send("⬇️ Verificando enlace...")
         is_valid = await is_valid_instagram_url(url)
         if not is_valid:
-            await interaction.followup.send("❌ El enlace proporcionado no es válido o el Reel no está disponible.")
-            try:
-                await searching_msg.delete()
-            except:
-                pass
+            await interaction.followup.send("❌ El enlace no es válido o el Reel no está disponible.")
+            await searching_msg.delete()
             return
             
-        # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(url)
         if not embedez_url:
-            await interaction.followup.send(f"❌ Error: No se pudo transformar el enlace del Reel: {url}")
-            try:
-                await searching_msg.delete()
-            except:
-                pass
+            await interaction.followup.send(f"❌ Error: No se pudo transformar el enlace: {url}")
+            await searching_msg.delete()
             return
         
-        # Enviar el video con el enlace transformado
         await interaction.followup.send(f"📱 Aquí tienes tu Reel de Instagram:\n{embedez_url}")
-        
-        try:
-            await searching_msg.delete()
-        except:
-            pass
+        await searching_msg.delete()
             
     except Exception as e:
         error_msg = str(e)
@@ -884,59 +926,42 @@ async def prefix_video_directo(ctx, url: str):
     message_timestamps[ctx.message.id] = now
     
     if 'instagram.com' not in url:
-        await ctx.send("❌ Por favor proporciona una URL válida de Instagram Reels.")
+        await ctx.send("❌ Proporciona una URL válida de Instagram Reels.")
         return
         
-    loading_msg = await ctx.send("⬇️ Verificando enlace... Por favor espera.")
+    loading_msg = await ctx.send("⬇️ Verificando enlace...")
     
     try:
         is_valid = await is_valid_instagram_url(url)
         if not is_valid:
-            await ctx.send("❌ El enlace proporcionado no es válido o el Reel no está disponible.")
-            try:
-                await loading_msg.delete()
-            except:
-                pass
+            await ctx.send("❌ El enlace no es válido o el Reel no está disponible.")
+            await loading_msg.delete()
             return
                 
-        # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(url)
         if not embedez_url:
-            await ctx.send(f"❌ Error: No se pudo transformar el enlace del Reel: {url}")
-            try:
-                await loading_msg.delete()
-            except:
-                pass
+            await ctx.send(f"❌ Error: No se pudo transformar el enlace: {url}")
+            await loading_msg.delete()
             return
         
-        # Enviar el video con el enlace transformado
         await ctx.send(f"📱 Aquí tienes tu Reel de Instagram:\n{embedez_url}")
-        
-        try:
-            await loading_msg.delete()
-        except:
-            pass
+        await loading_msg.delete()
             
     except Exception as e:
         error_msg = str(e)
         await ctx.send(f"❌ Error: {error_msg}")
         print(f"[_video_directo] Error: {error_msg}")
 
-# Tarea periódica para enviar videos aleatorios (intervalo dinámico)
+# Tarea periódica para enviar videos aleatorios a múltiples canales
 @tasks.loop(seconds=get_interval_in_seconds(config["interval"], config["unit"]))
 async def send_random_video():
-    global themes, instagram_connected, channel_id, recently_sent_videos
+    global themes, instagram_connected, channels, recently_sent_videos
     
-    if not themes or not instagram_connected or not channel_id:
-        print("[send_random_video] No se puede ejecutar la tarea automática: faltan temas, conexión a Instagram o ID del canal.")
+    if not themes or not instagram_connected or not channels:
+        print("[send_random_video] No se puede ejecutar: faltan temas, conexión a Instagram o canales.")
         return
         
     try:
-        channel = bot.get_channel(channel_id)
-        if not channel:
-            print(f"[send_random_video] No se pudo encontrar el canal con ID {channel_id}")
-            return
-            
         theme = random.choice(themes)
         print(f"[send_random_video] Tema seleccionado: {theme}")
         
@@ -945,7 +970,6 @@ async def send_random_video():
             print(f"[send_random_video] No se encontraron Reels para el tema: {theme}")
             return
         
-        # Filtrar videos que no hayan sido enviados recientemente
         available_videos = [video for video in videos if video['url'] not in recently_sent_videos]
         if not available_videos:
             recently_sent_videos.clear()
@@ -958,15 +982,27 @@ async def send_random_video():
         if len(recently_sent_videos) > 10:
             recently_sent_videos.pop(0)
         
-        # Transformar el enlace a instagramez.com
         embedez_url = transform_to_embedez_url(video_url)
         if not embedez_url:
-            print(f"[send_random_video] Error: No se pudo transformar el enlace del Reel: {video_url}")
+            print(f"[send_random_video] Error: No se pudo transformar el enlace: {video_url}")
             return
         
-        # Enviar el video con el enlace transformado
-        await channel.send(f"📱 Reel automático de **{theme}**:\n{embedez_url}")
-        print(f"[send_random_video] Reel enviado automáticamente para el tema: {theme}")
+        content_msg = f"📱 Reel automático de **{theme}**:\n{embedez_url}"
+        
+        for channel_id in channels:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                permissions = channel.permissions_for(channel.guild.me)
+                if permissions.send_messages:
+                    try:
+                        await channel.send(content=content_msg)
+                        print(f"[send_random_video] Reel enviado a {channel.name} ({channel_id})")
+                    except Exception as e:
+                        print(f"[send_random_video] Error al enviar a {channel_id}: {e}")
+                else:
+                    print(f"[send_random_video] Sin permisos para enviar en {channel.name} ({channel_id})")
+            else:
+                print(f"[send_random_video] No se encontró el canal con ID {channel_id}")
         
     except Exception as e:
         print(f"[send_random_video] Error en la tarea automática: {e}")
