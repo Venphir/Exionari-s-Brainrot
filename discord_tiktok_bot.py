@@ -387,12 +387,23 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True, force
 
 # Comando para agregar un canal a la lista
 @bot.command(name='agregar_canal')
-async def add_channel(ctx, channel_id: int):
+async def add_channel(ctx, channel_id: str):  # Cambiamos de int a str para manejar menciones
     global channels
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
         return
     message_timestamps[ctx.message.id] = now
+    
+    # Extraer el ID del canal, ya sea que se pase como mención (<#ID>) o como número
+    try:
+        # Si es una mención de canal (<#ID>), extraemos el ID
+        if channel_id.startswith('<#') and channel_id.endswith('>'):
+            channel_id = channel_id[2:-1]  # Quitamos "<#" y ">"
+        # Convertimos el ID a entero
+        channel_id = int(channel_id)
+    except ValueError:
+        await ctx.send("❌ Por favor, ingresa un ID de canal válido (puede ser un número o una mención de canal).")
+        return
     
     channel = bot.get_channel(channel_id)
     if channel is None:
