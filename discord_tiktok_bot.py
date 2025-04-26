@@ -97,6 +97,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("El token del bot de Discord no se encontró en el archivo .env. Asegúrate de incluir 'BOT_TOKEN'.")
 
+# Diccionario para almacenar las tareas de envío por canal
+channel_tasks = {}
+
 # Función para transformar el enlace de Instagram a instagramez.com
 def transform_to_embedez_url(instagram_url):
     """Transforma un enlace de Instagram a un enlace de instagramez.com."""
@@ -134,8 +137,6 @@ def save_config(config):
 
 # Cargar la configuración inicial
 config = load_config()
-interval = config["interval"]
-unit = config["unit"]
 
 # Convertir el intervalo a segundos para la tarea
 def get_interval_in_seconds(interval, unit):
@@ -155,6 +156,11 @@ def load_channels():
             with open(channels_file, "r", encoding="utf-8") as f:
                 channels = json.load(f)
                 print(f"Canales cargados: {channels}")
+                # Convertir lista antigua de IDs a la nueva estructura si es necesario
+                if channels and isinstance(channels[0], int):
+                    # Convertir formato antiguo (solo IDs) a nuevo formato
+                    channels = [{"channel_id": channel_id, "interval": config["interval"], "unit": config["unit"]} for channel_id in channels]
+                    save_channels(channels)  # Guardar en el nuevo formato
                 return channels
         except json.JSONDecodeError:
             print("Error: El archivo channels.json está corrupto. Usando lista vacía.")
@@ -172,7 +178,7 @@ def save_channels(channels):
         json.dump(channels, f, ensure_ascii=False, indent=4)
     print("Canales guardados correctamente.")
 
-# Lista para almacenar los canales
+# Lista para almacenar los canales con intervalos
 channels = load_channels()
 
 # Evento cuando el bot está listo
@@ -184,7 +190,7 @@ async def on_ready():
         print("Comandos de aplicación sincronizados.")
         
         # Iniciar las tareas
-        send_random_video.start()
+        start_channel_tasks()
         clean_timestamps.start()
         clean_recent_videos.start()
         
@@ -385,9 +391,94 @@ async def get_instagram_reels_by_hashtag(hashtag, count=5, use_cache=True, force
     print(f"[get_instagram_reels_by_hashtag] Total de videos devueltos: {len(videos_info)}")
     return videos_info[:count]
 
+# Función para enviar videos a un canal específico
+async def send_video_to_channel(channel_id):
+    global themes, instagram_connected, recently_sent_videos
+    if not themes or not instagram_connected:
+        print(f"[send_video_to_channel] No se puede ejecutar para canal {channel_id}: faltan temas o conexión a Instagram.")
+        return
+
+    try:
+        theme = random.choice(themes)
+        print(f"[send_video_to_channel] Tema seleccionado para canal {channel_id}: {theme}")
+        
+        videos = await get_instagram_reels_by_hashtag(theme, count=10, force_refresh=True)
+        if not videos:
+            print(f"[send_video_to_channel] No se encontraron Reels para el tema: {theme} en canal {channel_id}")
+            return
+        
+        available_videos = [video for video in videos if video['url'] not in recently_sent_videos]
+        if not available_videos:
+            recently_sent_videos.clear()
+            available_videos = videos
+        
+        video_info = random.choice(available_videos)
+        video_url = video_info['url']
+        
+        recently_sent_videos.append(video_url)
+        if len(recently_sent_videos) > 10:
+            recently_sent_videos.pop(0)
+        
+        embedez_url = transform_to_embedez_url(video_url)
+        if not embedez_url:
+            print(f"[send_video_to_channel] Error: No se pudo transformar el enlace: {video_url} para canal {channel_id}")
+            return
+        
+        content_msg = f"📱 Reel automático de **{theme}**:\n{embedez_url}"
+        
+        channel = bot.get_channel(channel_id)
+        if channel:
+            permissions = channel.permissions_for(channel.guild.me)
+            if permissions.send_messages:
+                try:
+                    await channel.send(content=content_msg)
+                    print(f"[send_video_to_channel] Reel enviado a {channel.name} ({channel_id})")
+                except Exception as e:
+                    print(f"[send_video_to_channel] Error al enviar a {channel_id}: {e}")
+            else:
+                print(f"[send_video_to_channel] Sin permisos para enviar en {channel.name} ({channel_id})")
+        else:
+            print(f"[send_video_to_channel] No se encontró el canal con ID {channel_id}")
+        
+    except Exception as e:
+        print(f"[send_video_to_channel] Error en la tarea automática para canal {channel_id}: {e}")
+        traceback.print_exc()
+
+# Función para crear una tarea de envío para un canal
+def create_channel_task(channel_id, interval, unit):
+    interval_seconds = get_interval_in_seconds(interval, unit)
+
+    @tasks.loop(seconds=interval_seconds)
+    async def channel_task():
+        await send_video_to_channel(channel_id)
+
+    channel_task.start()
+    return channel_task
+
+# Función para iniciar todas las tareas de los canales
+def start_channel_tasks():
+    global channel_tasks
+    for channel in channels:
+        channel_id = channel["channel_id"]
+        interval = channel["interval"]
+        unit = channel["unit"]
+        if channel_id not in channel_tasks:
+            task = create_channel_task(channel_id, interval, unit)
+            channel_tasks[channel_id] = task
+            print(f"[start_channel_tasks] Tarea iniciada para canal {channel_id} con intervalo {interval} {unit}")
+
+# Función para detener todas las tareas de los canales
+def stop_channel_tasks():
+    global channel_tasks
+    for channel_id, task in channel_tasks.items():
+        if task.is_running():
+            task.stop()
+            print(f"[stop_channel_tasks] Tarea detenida para canal {channel_id}")
+    channel_tasks.clear()
+
 # Comando para agregar un canal a la lista
 @bot.command(name='agregar_canal')
-async def add_channel(ctx, channel_id: str):  # Cambiamos de int a str para manejar menciones
+async def add_channel(ctx, channel_id: str, interval: int, unit: str):
     global channels
     now = time.time()
     if ctx.message.id in message_timestamps and now - message_timestamps[ctx.message.id] < 5:
@@ -396,10 +487,8 @@ async def add_channel(ctx, channel_id: str):  # Cambiamos de int a str para mane
     
     # Extraer el ID del canal, ya sea que se pase como mención (<#ID>) o como número
     try:
-        # Si es una mención de canal (<#ID>), extraemos el ID
         if channel_id.startswith('<#') and channel_id.endswith('>'):
             channel_id = channel_id[2:-1]  # Quitamos "<#" y ">"
-        # Convertimos el ID a entero
         channel_id = int(channel_id)
     except ValueError:
         await ctx.send("❌ Por favor, ingresa un ID de canal válido (puede ser un número o una mención de canal).")
@@ -410,30 +499,86 @@ async def add_channel(ctx, channel_id: str):  # Cambiamos de int a str para mane
         await ctx.send(f"❌ No se encontró el canal con ID {channel_id}.")
         return
     
-    if channel_id in channels:
-        await ctx.send(f"⚠️ El canal <#{channel_id}> ya está en la lista.")
+    # Validar intervalo y unidad
+    unit = unit.lower()
+    if unit not in ["minutes", "hours", "days"]:
+        await ctx.send("❌ Unidad de tiempo no válida. Usa 'minutes', 'hours' o 'days'.")
         return
     
-    channels.append(channel_id)
+    if interval <= 0:
+        await ctx.send("❌ El intervalo debe ser un número mayor que 0.")
+        return
+    
+    if unit == "minutes" and interval < 1:
+        await ctx.send("❌ Para 'minutes', el intervalo mínimo es 1 minuto.")
+        return
+    if unit == "hours" and interval < 1:
+        await ctx.send("❌ Para 'hours', el intervalo mínimo es 1 hora.")
+        return
+    if unit == "days" and interval < 1:
+        await ctx.send("❌ Para 'days', el intervalo mínimo es 1 día.")
+        return
+
+    # Verificar si el canal ya está en la lista
+    for ch in channels:
+        if ch["channel_id"] == channel_id:
+            await ctx.send(f"⚠️ El canal <#{channel_id}> ya está en la lista.")
+            return
+    
+    # Agregar el canal con su intervalo
+    channels.append({"channel_id": channel_id, "interval": interval, "unit": unit})
     save_channels(channels)
-    await ctx.send(f"✅ Canal <#{channel_id}> agregado a la lista de envío automático.")
+    
+    # Detener y reiniciar las tareas para incluir el nuevo canal
+    stop_channel_tasks()
+    start_channel_tasks()
+    
+    await ctx.send(f"✅ Canal <#{channel_id}> agregado a la lista de envío automático con intervalo de {interval} {unit}.")
 
 # Comando slash para agregar un canal
 @bot.tree.command(name="agregar_canal", description="Agrega un canal a la lista de envío automático de videos")
-async def slash_add_channel(interaction: discord.Interaction, channel_id: int):
+async def slash_add_channel(interaction: discord.Interaction, channel_id: int, interval: int, unit: str):
     global channels
     channel = bot.get_channel(channel_id)
     if channel is None:
         await interaction.response.send_message(f"❌ No se encontró el canal con ID {channel_id}.", ephemeral=True)
         return
     
-    if channel_id in channels:
-        await interaction.response.send_message(f"⚠️ El canal <#{channel_id}> ya está en la lista.", ephemeral=True)
+    # Validar intervalo y unidad
+    unit = unit.lower()
+    if unit not in ["minutes", "hours", "days"]:
+        await interaction.response.send_message("❌ Unidad de tiempo no válida. Usa 'minutes', 'hours' o 'days'.", ephemeral=True)
         return
     
-    channels.append(channel_id)
+    if interval <= 0:
+        await interaction.response.send_message("❌ El intervalo debe ser un número mayor que 0.", ephemeral=True)
+        return
+    
+    if unit == "minutes" and interval < 1:
+        await interaction.response.send_message("❌ Para 'minutes', el intervalo mínimo es 1 minuto.", ephemeral=True)
+        return
+    if unit == "hours" and interval < 1:
+        await interaction.response.send_message("❌ Para 'hours', el intervalo mínimo es 1 hora.", ephemeral=True)
+        return
+    if unit == "days" and interval < 1:
+        await interaction.response.send_message("❌ Para 'days', el intervalo mínimo es 1 día.", ephemeral=True)
+        return
+
+    # Verificar si el canal ya está en la lista
+    for ch in channels:
+        if ch["channel_id"] == channel_id:
+            await interaction.response.send_message(f"⚠️ El canal <#{channel_id}> ya está en la lista.", ephemeral=True)
+            return
+    
+    # Agregar el canal con su intervalo
+    channels.append({"channel_id": channel_id, "interval": interval, "unit": unit})
     save_channels(channels)
-    await interaction.response.send_message(f"✅ Canal <#{channel_id}> agregado a la lista de envío automático.")
+    
+    # Detener y reiniciar las tareas para incluir el nuevo canal
+    stop_channel_tasks()
+    start_channel_tasks()
+    
+    await interaction.response.send_message(f"✅ Canal <#{channel_id}> agregado a la lista de envío automático con intervalo de {interval} {unit}.")
 
 # Comando para eliminar un canal de la lista
 @bot.command(name='eliminar_canal')
@@ -444,25 +589,34 @@ async def remove_channel(ctx, channel_id: int):
         return
     message_timestamps[ctx.message.id] = now
     
-    if channel_id not in channels:
-        await ctx.send(f"❌ El canal <#{channel_id}> no está en la lista.")
-        return
+    # Buscar y eliminar el canal
+    for ch in channels:
+        if ch["channel_id"] == channel_id:
+            channels.remove(ch)
+            save_channels(channels)
+            # Detener y reiniciar las tareas
+            stop_channel_tasks()
+            start_channel_tasks()
+            await ctx.send(f"✅ Canal <#{channel_id}> eliminado de la lista de envío automático.")
+            return
     
-    channels.remove(channel_id)
-    save_channels(channels)
-    await ctx.send(f"✅ Canal <#{channel_id}> eliminado de la lista de envío automático.")
+    await ctx.send(f"❌ El canal <#{channel_id}> no está en la lista.")
 
 # Comando slash para eliminar un canal
 @bot.tree.command(name="eliminar_canal", description="Elimina un canal de la lista de envío automático de videos")
 async def slash_remove_channel(interaction: discord.Interaction, channel_id: int):
     global channels
-    if channel_id not in channels:
-        await interaction.response.send_message(f"❌ El canal <#{channel_id}> no está en la lista.", ephemeral=True)
-        return
+    for ch in channels:
+        if ch["channel_id"] == channel_id:
+            channels.remove(ch)
+            save_channels(channels)
+            # Detener y reiniciar las tareas
+            stop_channel_tasks()
+            start_channel_tasks()
+            await interaction.response.send_message(f"✅ Canal <#{channel_id}> eliminado de la lista de envío automático.")
+            return
     
-    channels.remove(channel_id)
-    save_channels(channels)
-    await interaction.response.send_message(f"✅ Canal <#{channel_id}> eliminado de la lista de envío automático.")
+    await interaction.response.send_message(f"❌ El canal <#{channel_id}> no está en la lista.", ephemeral=True)
 
 # Comando para ver la lista de canales
 @bot.command(name='ver_canales')
@@ -476,8 +630,11 @@ async def view_channels(ctx):
     if not channels:
         await ctx.send("📋 No hay canales asignados para envío automático.")
     else:
-        channel_mentions = ', '.join([f"<#{channel_id}>" for channel_id in channels])
-        await ctx.send(f"📋 Canales para envío automático: {channel_mentions}")
+        channel_info = []
+        for ch in channels:
+            channel_info.append(f"<#{ch['channel_id']}> (cada {ch['interval']} {ch['unit']})")
+        channel_list = ', '.join(channel_info)
+        await ctx.send(f"📋 Canales para envío automático: {channel_list}")
 
 # Comando slash para ver la lista de canales
 @bot.tree.command(name="ver_canales", description="Muestra la lista de canales para envío automático de videos")
@@ -486,8 +643,11 @@ async def slash_view_channels(interaction: discord.Interaction):
     if not channels:
         await interaction.response.send_message("📋 No hay canales asignados para envío automático.", ephemeral=True)
     else:
-        channel_mentions = ', '.join([f"<#{channel_id}>" for channel_id in channels])
-        await interaction.response.send_message(f"📋 Canales para envío automático: {channel_mentions}")
+        channel_info = []
+        for ch in channels:
+            channel_info.append(f"<#{ch['channel_id']}> (cada {ch['interval']} {ch['unit']})")
+        channel_list = ', '.join(channel_info)
+        await interaction.response.send_message(f"📋 Canales para envío automático: {channel_list}")
 
 # Comando para limpiar el caché
 @bot.command(name='limpiar_cache')
@@ -523,7 +683,7 @@ async def slash_clear_cache(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Error al limpiar el caché: {str(e)}")
         print(f"[slash_clear_cache] Error al limpiar el caché: {e}")
 
-# Comando para configurar el intervalo de envío automático
+# Comando para configurar el intervalo de envío automático (ahora obsoleto, pero lo dejamos por compatibilidad)
 @bot.command(name='configurar_intervalo')
 async def configure_interval(ctx, interval: int, unit: str):
     global config
@@ -532,68 +692,12 @@ async def configure_interval(ctx, interval: int, unit: str):
         return
     message_timestamps[ctx.message.id] = now
     
-    unit = unit.lower()
-    if unit not in ["minutes", "hours", "days"]:
-        await ctx.send("❌ Unidad de tiempo no válida. Usa 'minutes', 'hours' o 'days'.")
-        return
-    
-    if interval <= 0:
-        await ctx.send("❌ El intervalo debe ser un número mayor que 0.")
-        return
-    
-    if unit == "minutes" and interval < 1:
-        await ctx.send("❌ Para 'minutes', el intervalo mínimo es 1 minuto.")
-        return
-    if unit == "hours" and interval < 1:
-        await ctx.send("❌ Para 'hours', el intervalo mínimo es 1 hora.")
-        return
-    if unit == "days" and interval < 1:
-        await ctx.send("❌ Para 'days', el intervalo mínimo es 1 día.")
-        return
+    await ctx.send("⚠️ Este comando está obsoleto. Ahora puedes configurar intervalos individuales al agregar un canal con `_agregar_canal` o `/agregar_canal`.")
 
-    config = {"interval": interval, "unit": unit}
-    save_config(config)
-    
-    send_random_video.cancel()
-    send_random_video.change_interval(seconds=get_interval_in_seconds(interval, unit))
-    send_random_video.start()
-    
-    await ctx.send(f"✅ Intervalo de envío automático configurado a {interval} {unit}.")
-    print(f"[configure_interval] Intervalo configurado: {interval} {unit}")
-
-# Comando slash para configurar el intervalo
+# Comando slash para configurar el intervalo (obsoleto)
 @bot.tree.command(name="configurar_intervalo", description="Configura el intervalo de envío automático de videos")
 async def slash_configure_interval(interaction: discord.Interaction, interval: int, unit: str):
-    global config
-    unit = unit.lower()
-    if unit not in ["minutes", "hours", "days"]:
-        await interaction.response.send_message("❌ Unidad de tiempo no válida. Usa 'minutes', 'hours' o 'days'.", ephemeral=True)
-        return
-    
-    if interval <= 0:
-        await interaction.response.send_message("❌ El intervalo debe ser un número mayor que 0.", ephemeral=True)
-        return
-    
-    if unit == "minutes" and interval < 1:
-        await interaction.response.send_message("❌ Para 'minutes', el intervalo mínimo es 1 minuto.", ephemeral=True)
-        return
-    if unit == "hours" and interval < 1:
-        await interaction.response.send_message("❌ Para 'hours', el intervalo mínimo es 1 hora.", ephemeral=True)
-        return
-    if unit == "days" and interval < 1:
-        await interaction.response.send_message("❌ Para 'days', el intervalo mínimo es 1 día.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=False)
-    config = {"interval": interval, "unit": unit}
-    save_config(config)
-    
-    send_random_video.cancel()
-    send_random_video.change_interval(seconds=get_interval_in_seconds(interval, unit))
-    send_random_video.start()
-    
-    await interaction.followup.send(f"✅ Intervalo de envío automático configurado a {interval} {unit}.")
-    print(f"[slash_configure_interval] Intervalo configurado: {interval} {unit}")
+    await interaction.response.send_message("⚠️ Este comando está obsoleto. Ahora puedes configurar intervalos individuales al agregar un canal con `/agregar_canal`.", ephemeral=True)
 
 # Comando para asignar temas (hashtags)
 @bot.command(name='asignar_tema')
@@ -698,7 +802,6 @@ async def slash_view_themes(interaction: discord.Interaction):
 
 @bot.tree.command(name="ayuda", description="Muestra la lista de comandos disponibles")
 async def slash_help_command(interaction: discord.Interaction):
-    global config
     embed = discord.Embed(
         title="📱 Ayuda del Bot Brainrot",
         description="Aquí encontrarás todos los comandos disponibles para interactuar con el bot.",
@@ -735,21 +838,12 @@ async def slash_help_command(interaction: discord.Interaction):
         value=(
             "**`/agregar_canal`** o **`_agregar_canal`**\n"
             "➡️ Agrega un canal a la lista de envío automático.\n"
-            "➡️ Ejemplo: `/agregar_canal channel_id:123456789` o `_agregar_canal 123456789`\n\n"
+            "➡️ Ejemplo: `/agregar_canal channel_id:123456789 interval:5 unit:minutes`\n\n"
             "**`/eliminar_canal`** o **`_eliminar_canal`**\n"
             "➡️ Elimina un canal de la lista de envío automático.\n"
             "➡️ Ejemplo: `/eliminar_canal channel_id:123456789` o `_eliminar_canal 123456789`\n\n"
             "**`/ver_canales`** o **`_ver_canales`**\n"
             "➡️ Muestra la lista de canales para envío automático."
-        ),
-        inline=False
-    )
-    embed.add_field(
-        name="⏰ Configuración de Intervalo",
-        value=(
-            "**`/configurar_intervalo`** o **`_configurar_intervalo`**\n"
-            "➡️ Configura el intervalo de tiempo para el envío automático.\n"
-            "➡️ Ejemplo: `/configurar_intervalo interval:30 unit:minutes`"
         ),
         inline=False
     )
@@ -774,7 +868,7 @@ async def slash_help_command(interaction: discord.Interaction):
         value=(
             "• Usa comandos con `/` o con prefijo `_`.\n"
             "• Los temas y canales se guardan automáticamente.\n"
-            "• Los Reels se envían cada " + f"{config['interval']} {config['unit']} a los canales configurados."
+            "• Los Reels se envían según los intervalos configurados por canal."
         ),
         inline=False
     )
@@ -962,62 +1056,6 @@ async def prefix_video_directo(ctx, url: str):
         error_msg = str(e)
         await ctx.send(f"❌ Error: {error_msg}")
         print(f"[_video_directo] Error: {error_msg}")
-
-# Tarea periódica para enviar videos aleatorios a múltiples canales
-@tasks.loop(seconds=get_interval_in_seconds(config["interval"], config["unit"]))
-async def send_random_video():
-    global themes, instagram_connected, channels, recently_sent_videos
-    
-    if not themes or not instagram_connected or not channels:
-        print("[send_random_video] No se puede ejecutar: faltan temas, conexión a Instagram o canales.")
-        return
-        
-    try:
-        theme = random.choice(themes)
-        print(f"[send_random_video] Tema seleccionado: {theme}")
-        
-        videos = await get_instagram_reels_by_hashtag(theme, count=10, force_refresh=True)
-        if not videos:
-            print(f"[send_random_video] No se encontraron Reels para el tema: {theme}")
-            return
-        
-        available_videos = [video for video in videos if video['url'] not in recently_sent_videos]
-        if not available_videos:
-            recently_sent_videos.clear()
-            available_videos = videos
-        
-        video_info = random.choice(available_videos)
-        video_url = video_info['url']
-        
-        recently_sent_videos.append(video_url)
-        if len(recently_sent_videos) > 10:
-            recently_sent_videos.pop(0)
-        
-        embedez_url = transform_to_embedez_url(video_url)
-        if not embedez_url:
-            print(f"[send_random_video] Error: No se pudo transformar el enlace: {video_url}")
-            return
-        
-        content_msg = f"📱 Reel automático de **{theme}**:\n{embedez_url}"
-        
-        for channel_id in channels:
-            channel = bot.get_channel(channel_id)
-            if channel:
-                permissions = channel.permissions_for(channel.guild.me)
-                if permissions.send_messages:
-                    try:
-                        await channel.send(content=content_msg)
-                        print(f"[send_random_video] Reel enviado a {channel.name} ({channel_id})")
-                    except Exception as e:
-                        print(f"[send_random_video] Error al enviar a {channel_id}: {e}")
-                else:
-                    print(f"[send_random_video] Sin permisos para enviar en {channel.name} ({channel_id})")
-            else:
-                print(f"[send_random_video] No se encontró el canal con ID {channel_id}")
-        
-    except Exception as e:
-        print(f"[send_random_video] Error en la tarea automática: {e}")
-        traceback.print_exc()
 
 # Tarea para limpiar mensajes temporales
 @tasks.loop(minutes=5)
